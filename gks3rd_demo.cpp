@@ -1,0 +1,226 @@
+#include "gks3rd_demo.h"
+
+#include "accuracy_test.h"
+#include "riemann_problem.h"
+
+#include <fstream>
+#include <iomanip>
+#include <string>
+
+namespace
+{
+	void Configure_GKS3rd_1D(double c1, double c2)
+	{
+		K = 4;
+		Gamma = 1.4;
+		R_gas = 1.0;
+
+		tau_type = Euler;
+		c1_euler = c1;
+		c2_euler = c2;
+
+		flux_function = GKS;
+		gks1dsolver = gks3rd;
+		cellreconstruction = WENO5_AO;
+		reconstruction_variable = characteristic;
+		wenotype = wenoz;
+		g0reconstruction = Center_GKS3rd;
+		timecoe_list = S1O3;
+		is_reduce_order_warning = false;
+		is_show_1d_timestep = false;
+	}
+
+	void Prepare_Block_1D(Block1d& block, int mesh_number, double left, double right, double CFL)
+	{
+		block.nodex = mesh_number;
+		block.ghost = 3;
+		block.nx = block.nodex + 2 * block.ghost;
+		block.nodex_begin = block.ghost;
+		block.nodex_end = block.nodex + block.ghost - 1;
+		block.left = left;
+		block.right = right;
+		block.dx = (block.right - block.left) / block.nodex;
+		block.CFL = CFL;
+		Initial_stages(block);
+	}
+
+	void Write_Density_Output(Fluid1d* fluids, Block1d block, const char* path)
+	{
+		std::ofstream out(path);
+		out << std::setprecision(16);
+		out << "# x rho\n";
+		for (int i = block.ghost; i < block.nx - block.ghost; ++i)
+		{
+			out << fluids[i].cx << " " << fluids[i].convar[0] << "\n";
+		}
+	}
+
+	void Advance_1D_Case(
+		Fluid1d* fluids,
+		Interface1d* interfaces,
+		Flux1d** fluxes,
+		Block1d& block,
+		BoundaryCondition leftboundary,
+		BoundaryCondition rightboundary,
+		Fluid1d* bcvalue,
+		double tstop)
+	{
+		block.t = 0.0;
+		block.step = 0;
+		while (block.t < tstop - 1e-14)
+		{
+			CopyFluid_new_to_old(fluids, block);
+			block.dt = Get_CFL(block, fluids, tstop);
+			for (int stage = 0; stage < block.stages; ++stage)
+			{
+				leftboundary(fluids, block, bcvalue[0]);
+				rightboundary(fluids, block, bcvalue[1]);
+				Reconstruction_within_cell(interfaces, fluids, block);
+				Reconstruction_forg0(interfaces, fluids, block);
+				Calculate_flux(fluxes, interfaces, block, stage);
+				Update(fluids, fluxes, block, stage);
+			}
+			block.t += block.dt;
+			block.step++;
+		}
+	}
+
+	void Compute_Sinwave_Error(Fluid1d* fluids, Block1d block, double* error)
+	{
+		double error1 = 0.0;
+		double error2 = 0.0;
+		double errorinf = 0.0;
+		for (int i = block.ghost; i < block.nx - block.ghost; ++i)
+		{
+			const double pi = 3.14159265358979323846;
+			const double exact = 1.0 - 0.2 / pi / block.dx *
+				(cos(pi * (i + 1 - block.ghost) * block.dx) - cos(pi * (i - block.ghost) * block.dx));
+			const double diff = fabs(fluids[i].convar[0] - exact);
+			error1 += diff;
+			error2 += diff * diff;
+			errorinf = (diff > errorinf) ? diff : errorinf;
+		}
+		error[0] = error1 / block.nodex;
+		error[1] = sqrt(error2 / block.nodex);
+		error[2] = errorinf;
+	}
+
+	void Write_Sod_Output(Fluid1d* fluids, Block1d block, const char* path)
+	{
+		Convar_to_primvar(fluids, block);
+		std::ofstream out(path);
+		out << std::setprecision(16);
+		out << "# x rho u p\n";
+		for (int i = block.ghost; i < block.nx - block.ghost; ++i)
+		{
+			out << fluids[i].cx << " "
+				<< fluids[i].primvar[0] << " "
+				<< fluids[i].primvar[1] << " "
+				<< fluids[i].primvar[2] << "\n";
+		}
+	}
+}
+
+void accuracy_sinwave_1d_gks3rd()
+{
+	Configure_GKS3rd_1D(0.0, 0.0);
+	const double accuracy_cfl = 0.05;
+
+	const int mesh_set = 5;
+	const int mesh_number[mesh_set] = { 20, 40, 80, 160, 320};
+	double error[mesh_set][3]{};
+
+	for (int imesh = 0; imesh < mesh_set; ++imesh)
+	{
+		Block1d block;
+		Prepare_Block_1D(block, mesh_number[imesh], 0.0, 2.0, accuracy_cfl);
+
+		Fluid1d* fluids = new Fluid1d[block.nx];
+		Interface1d* interfaces = new Interface1d[block.nx + 1];
+		Flux1d** fluxes = Setflux_array(block);
+		SetUniformMesh(block, fluids, interfaces, fluxes);
+		ICfor_sinwave(fluids, block);
+
+		Fluid1d* bcvalue = new Fluid1d[2];
+		Advance_1D_Case(
+			fluids, interfaces, fluxes, block,
+			periodic_boundary_left, periodic_boundary_right, bcvalue, 2.0);
+		Compute_Sinwave_Error(fluids, block, error[imesh]);
+		std::string path = "build/checks/gks3rd_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".dat";
+		Write_Density_Output(fluids, block, path.c_str());
+
+		delete[] bcvalue;
+		for (int i = 0; i <= block.nx; ++i)
+		{
+			delete[] fluxes[i];
+		}
+		delete[] fluxes;
+		delete[] interfaces;
+		delete[] fluids;
+	}
+
+	std::ofstream out("build/checks/gks3rd_sinwave_error.txt");
+	out << "# CFL " << accuracy_cfl << "\n";
+	out << "# mesh L1 L2 Linf\n";
+	for (int i = 0; i < mesh_set; ++i)
+	{
+		out << mesh_number[i] << " "
+			<< std::setprecision(16)
+			<< error[i][0] << " "
+			<< error[i][1] << " "
+			<< error[i][2] << "\n";
+	}
+
+	std::cout << "GKS3rd 1D sinwave errors" << std::endl;
+	for (int i = 0; i < mesh_set; ++i)
+	{
+		std::cout << "mesh=" << mesh_number[i]
+			<< " L1=" << error[i][0]
+			<< " L2=" << error[i][1]
+			<< " Linf=" << error[i][2];
+		if (i > 0)
+		{
+			std::cout << " order(L1)=" << log(error[i - 1][0] / error[i][0]) / log(2.0);
+		}
+		std::cout << std::endl;
+	}
+}
+
+void riemann_problem_1d_gks3rd()
+{
+	// Paper Sec. 4 suggests C1 << 1 and C2 = O(1) for Euler computations.
+	Configure_GKS3rd_1D(0.1, 1.0);
+
+	Block1d block;
+	Prepare_Block_1D(block, 200, 0.0, 1.0, 0.5);
+
+	Fluid1d* fluids = new Fluid1d[block.nx];
+	Interface1d* interfaces = new Interface1d[block.nx + 1];
+	Flux1d** fluxes = Setflux_array(block);
+		SetUniformMesh(block, fluids, interfaces, fluxes);
+
+	Fluid1d zone1;
+	zone1.primvar[0] = 1.0;
+	zone1.primvar[1] = 0.0;
+	zone1.primvar[2] = 1.0;
+	Fluid1d zone2;
+	zone2.primvar[0] = 0.125;
+	zone2.primvar[1] = 0.0;
+	zone2.primvar[2] = 0.1;
+	ICfor1dRM(fluids, zone1, zone2, block);
+
+	Fluid1d* bcvalue = new Fluid1d[2];
+	Advance_1D_Case(
+		fluids, interfaces, fluxes, block,
+		free_boundary_left, free_boundary_right, bcvalue, 0.2);
+	Write_Sod_Output(fluids, block, "build/checks/gks3rd_sod_t020.dat");
+
+	delete[] bcvalue;
+	for (int i = 0; i <= block.nx; ++i)
+	{
+		delete[] fluxes[i];
+	}
+	delete[] fluxes;
+	delete[] interfaces;
+	delete[] fluids;
+}
