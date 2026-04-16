@@ -978,7 +978,20 @@ void Reconstruction_forg0(Interface1d* interfaces, Fluid1d* fluids, Block1d bloc
 #pragma omp parallel  for
 	for (int i = block.ghost; i < block.nx - block.ghost + 1; ++i)
 	{
-		g0reconstruction(interfaces[i], &fluids[i - 1]);
+		// Center_GKS3rd needs one extra interface-equilibrium stencil on both sides,
+		// which in turn reaches two more cells when WENO5_AO_poly is formed. The
+		// very first/last physical interface does not have that enlarged stencil,
+		// so we fall back to the existing collision-based center reconstruction
+		// there instead of reading out of bounds.
+		if (g0reconstruction == Center_GKS3rd &&
+			(i == block.ghost || i == block.nx - block.ghost))
+		{
+			Center_collision(interfaces[i], &fluids[i - 1]);
+		}
+		else
+		{
+			g0reconstruction(interfaces[i], &fluids[i - 1]);
+		}
 	}
 }
 

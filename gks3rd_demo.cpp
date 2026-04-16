@@ -7,8 +7,27 @@
 #include <iomanip>
 #include <string>
 
+#if defined(_WIN32)
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
+
 namespace
 {
+	void Ensure_GKS3rd_Result_Directory()
+	{
+		// Keep the formal numerical outputs under build/result so they are
+		// separated from temporary debug artifacts in build/checks.
+#if defined(_WIN32)
+		_mkdir("build");
+		_mkdir("build\\result");
+#else
+		mkdir("build", 0777);
+		mkdir("build/result", 0777);
+#endif
+	}
+
 	void Configure_GKS3rd_1D(double c1, double c2)
 	{
 		K = 4;
@@ -27,7 +46,7 @@ namespace
 		g0reconstruction = Center_GKS3rd;
 		timecoe_list = S1O3;
 		is_reduce_order_warning = false;
-		is_show_1d_timestep = false;
+		is_show_1d_timestep = true;
 	}
 
 	void Prepare_Block_1D(Block1d& block, int mesh_number, double left, double right, double CFL)
@@ -110,19 +129,25 @@ namespace
 		Convar_to_primvar(fluids, block);
 		std::ofstream out(path);
 		out << std::setprecision(16);
-		out << "# x rho u p\n";
+		out << "variables = x,density,u,pressure,temperature,entropy,Ma\n";
+		out << "zone i = " << block.nodex << ", F=POINT\n";
 		for (int i = block.ghost; i < block.nx - block.ghost; ++i)
 		{
 			out << fluids[i].cx << " "
 				<< fluids[i].primvar[0] << " "
 				<< fluids[i].primvar[1] << " "
-				<< fluids[i].primvar[2] << "\n";
+				<< fluids[i].primvar[2] << " "
+				<< Temperature(fluids[i].primvar[0], fluids[i].primvar[2]) << " "
+				<< entropy(fluids[i].primvar[0], fluids[i].primvar[2]) << " "
+				<< sqrt(fluids[i].primvar[1] * fluids[i].primvar[1]) /
+					Soundspeed(fluids[i].primvar[0], fluids[i].primvar[2]) << "\n";
 		}
 	}
 }
 
 void accuracy_sinwave_1d_gks3rd()
 {
+	Ensure_GKS3rd_Result_Directory();
 	Configure_GKS3rd_1D(0.0, 0.0);
 	const double accuracy_cfl = 0.05;
 
@@ -146,7 +171,7 @@ void accuracy_sinwave_1d_gks3rd()
 			fluids, interfaces, fluxes, block,
 			periodic_boundary_left, periodic_boundary_right, bcvalue, 2.0);
 		Compute_Sinwave_Error(fluids, block, error[imesh]);
-		std::string path = "build/checks/gks3rd_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".dat";
+		std::string path = "build/result/gks3rd_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".dat";
 		Write_Density_Output(fluids, block, path.c_str());
 
 		delete[] bcvalue;
@@ -159,28 +184,27 @@ void accuracy_sinwave_1d_gks3rd()
 		delete[] fluids;
 	}
 
-	std::ofstream out("build/checks/gks3rd_sinwave_error.txt");
-	out << "# CFL " << accuracy_cfl << "\n";
-	out << "# mesh L1 L2 Linf\n";
-	for (int i = 0; i < mesh_set; ++i)
-	{
-		out << mesh_number[i] << " "
-			<< std::setprecision(16)
-			<< error[i][0] << " "
-			<< error[i][1] << " "
-			<< error[i][2] << "\n";
-	}
-
 	std::cout << "GKS3rd 1D sinwave errors" << std::endl;
 	for (int i = 0; i < mesh_set; ++i)
 	{
+		double order_l1 = 0.0;
+		double order_l2 = 0.0;
+		double order_linf = 0.0;
+		if (i > 0)
+		{
+			order_l1 = log(error[i - 1][0] / error[i][0]) / log(2.0);
+			order_l2 = log(error[i - 1][1] / error[i][1]) / log(2.0);
+			order_linf = log(error[i - 1][2] / error[i][2]) / log(2.0);
+		}
 		std::cout << "mesh=" << mesh_number[i]
 			<< " L1=" << error[i][0]
 			<< " L2=" << error[i][1]
 			<< " Linf=" << error[i][2];
 		if (i > 0)
 		{
-			std::cout << " order(L1)=" << log(error[i - 1][0] / error[i][0]) / log(2.0);
+			std::cout << " order(L1)=" << order_l1
+				<< " order(L2)=" << order_l2
+				<< " order(Linf)=" << order_linf;
 		}
 		std::cout << std::endl;
 	}
@@ -188,11 +212,12 @@ void accuracy_sinwave_1d_gks3rd()
 
 void riemann_problem_1d_gks3rd()
 {
+	Ensure_GKS3rd_Result_Directory();
 	// Paper Sec. 4 suggests C1 << 1 and C2 = O(1) for Euler computations.
 	Configure_GKS3rd_1D(0.1, 1.0);
 
 	Block1d block;
-	Prepare_Block_1D(block, 200, 0.0, 1.0, 0.5);
+	Prepare_Block_1D(block, 400, 0.0, 1.0, 0.5);
 
 	Fluid1d* fluids = new Fluid1d[block.nx];
 	Interface1d* interfaces = new Interface1d[block.nx + 1];
@@ -213,7 +238,7 @@ void riemann_problem_1d_gks3rd()
 	Advance_1D_Case(
 		fluids, interfaces, fluxes, block,
 		free_boundary_left, free_boundary_right, bcvalue, 0.2);
-	Write_Sod_Output(fluids, block, "build/checks/gks3rd_sod_t020.dat");
+	Write_Sod_Output(fluids, block, "build/result/gks3rd_sod_t020.plt");
 
 	delete[] bcvalue;
 	for (int i = 0; i <= block.nx; ++i)
