@@ -238,7 +238,7 @@ void riemann_problem_1d_gks3rd()
 	Advance_1D_Case(
 		fluids, interfaces, fluxes, block,
 		free_boundary_left, free_boundary_right, bcvalue, 0.2);
-	Write_Sod_Output(fluids, block, "build/result/gks3rd_sod_t020.plt");
+	Write_Sod_Output(fluids, block, "result/gks3rd1d_t020.plt");
 
 	delete[] bcvalue;
 	for (int i = 0; i <= block.nx; ++i)

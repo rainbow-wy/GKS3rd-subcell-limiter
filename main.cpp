@@ -15,6 +15,7 @@
 #include<omp.h>  //omp并行，尖括号<>代表外部库文件
 #include"output.h" //双引号代表该项目中的头文件
 #include "gks3rd_demo.h"
+#include "gks_fr_driver.h"
 //以下是几个测试算例的头文件
 #include"accuracy_test.h"
 #include"boundary_layer.h"
@@ -41,7 +42,9 @@ int main()
 	//make_directory_for_result(); //兼容linux的结果文件夹的临时方案
 	//accuracy_sinwave_1d(); //一维精度测试，通过周期线性的正弦波传播算例，测试格式在光滑（smooth flow）无粘工况下的精度
 	//accuracy_sinwave_1d_gks3rd();
-	riemann_problem_1d_gks3rd();
+	accuracy_sinwave_1d_gksfr();
+	//riemann_problem_1d_gksfr();
+	//riemann_problem_1d_gks3rd();
 	//riemann_problem_1d();  //一维黎曼问题测试，测试格式对于可压缩间断问题的鲁棒性和分辨率
     //accuracy_sinwave_2d(); //二维精度测试，通过二维周期线性的正弦波传播算例，测试格式在光滑（smooth flow）无粘工况下的精度
 	//riemann_problem_2d();  //二维黎曼问题测试，测试格式对于多维可压缩间断问题的鲁棒性和分辨率
@@ -50,5 +53,3 @@ int main()
 	//riemann_problem_subcell_1d();// 子单元GKS1D求解器
     return 0;
 }
-
-
