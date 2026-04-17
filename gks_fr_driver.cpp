@@ -3,6 +3,7 @@
 #include "gks_fr_high_order.h"
 #include "function.h"
 #include "gks_basic.h"
+#include "riemann_problem.h"
 
 #include <cmath>
 #include <fstream>
@@ -82,25 +83,6 @@ namespace
 		}
 	}
 
-	void InitializeSod(GKSFRMesh1D& mesh)
-	{
-		for (int e = 0; e < mesh.cells; ++e)
-		{
-			for (int i = 0; i < 3; ++i)
-			{
-				const double x = SolutionPointX(mesh, e, i);
-				if (x < 0.5)
-				{
-					SetPrimitiveAtPoint(mesh.cell[e].Q[i], 1.0, 0.0, 1.0);
-				}
-				else
-				{
-					SetPrimitiveAtPoint(mesh.cell[e].Q[i], 0.125, 0.0, 0.1);
-				}
-			}
-		}
-	}
-
 	double GetFRTimeStep(const GKSFRMesh1D& mesh, double CFL, double t, double tstop)
 	{
 		double dt = mesh.dx;
@@ -149,11 +131,12 @@ namespace
 		return true;
 	}
 
-	void WriteCellCenterDensity(const GKSFRMesh1D& mesh, const char* path)
+	void WriteCellCenterDensityTecplot(const GKSFRMesh1D& mesh, const char* path)
 	{
 		std::ofstream out(path);
 		out << std::setprecision(16);
-		out << "# x rho\n";
+		out << "variables = x,density\n";
+		out << "zone i = " << mesh.cells << ", F=POINT\n";
 		for (int e = 0; e < mesh.cells; ++e)
 		{
 			GKSFRCell1D cell = mesh.cell[e];
@@ -217,12 +200,18 @@ namespace
 		error[2] = einf;
 	}
 
+	std::string StepTaggedPath(const std::string& prefix, int final_step, const char* ext)
+	{
+		return "build/result/" + prefix + "_" + std::to_string(final_step) + ext;
+	}
+
 	bool AdvanceCase(
 		GKSFRMesh1D& mesh,
 		double CFL,
 		double tstop,
 		GKSFRBoundary1D boundary,
-		bool show_step)
+		bool show_step,
+		int* final_step = nullptr)
 	{
 		int step = 0;
 		double t = 0.0;
@@ -247,8 +236,20 @@ namespace
 					<< " point=" << bad_i
 					<< " after step=" << step
 					<< " time=" << t << std::endl;
+				if (final_step != nullptr)
+				{
+					*final_step = step;
+				}
 				return false;
 			}
+		}
+		if (final_step != nullptr)
+		{
+			*final_step = step;
+		}
+		if (show_step)
+		{
+			std::cout << "Numerical simulation completed successfully." << std::endl;
 		}
 		return true;
 	}
@@ -278,8 +279,8 @@ void accuracy_sinwave_1d_gksfr()
 		}
 		ComputeSinwaveError(mesh, tstop, error[imesh]);
 
-		std::string path = "build/result/gksfr_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".dat";
-		WriteCellCenterDensity(mesh, path.c_str());
+		std::string path = "build/result/gksfr_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".plt";
+		WriteCellCenterDensityTecplot(mesh, path.c_str());
 	}
 
 	std::cout << "GKS-FR 1D sinwave errors" << std::endl;
@@ -306,14 +307,15 @@ void riemann_problem_1d_gksfr()
 
 	GKSFRMesh1D mesh;
 	GKSFR_ResizeUniformMesh(mesh, 200, 0.0, 1.0);
-	InitializeSod(mesh);
+	ICfor1dRM(mesh, RiemannProblem1D_Sod());
 
-	const bool ok = AdvanceCase(mesh, 0.02, 0.2, gksfr_free, true);
+	int final_step = 0;
+	const bool ok = AdvanceCase(mesh, 0.02, 0.2, gksfr_free, true, &final_step);
 	if (!ok)
 	{
 		std::cout << "GKS-FR Sod run stopped because of an invalid state." << std::endl;
 		return;
 	}
 
-	WriteSodTecplot(mesh, "build/result/gksfr_sod_t020.plt");
+	WriteSodTecplot(mesh, StepTaggedPath("gksfr", final_step, ".plt").c_str());
 }

@@ -1,5 +1,50 @@
 #include"riemann_problem.h"
 
+namespace
+{
+	double CellCenterX(const GKSFRMesh1D& mesh, int e)
+	{
+		return mesh.x_left + (e + 0.5) * mesh.dx;
+	}
+
+	double SolutionPointX(const GKSFRMesh1D& mesh, int e, int i)
+	{
+		return CellCenterX(mesh, e) + 0.5 * mesh.dx * GKSFR_GL_Point(i);
+	}
+
+	void SetFRPointPrimitive(double* Q, double rho, double u, double p)
+	{
+		double prim[3] = { rho, u, p };
+		Primvar_to_convar_1D(Q, prim);
+	}
+}
+
+RiemannProblem1D RiemannProblem1D_Sod()
+{
+	RiemannProblem1D problem{};
+	problem.x_discontinuity = 0.5;
+	problem.left_prim[0] = 1.0;
+	problem.left_prim[1] = 0.0;
+	problem.left_prim[2] = 1.0;
+	problem.right_prim[0] = 0.125;
+	problem.right_prim[1] = 0.0;
+	problem.right_prim[2] = 0.1;
+	return problem;
+}
+
+RiemannProblem1D RiemannProblem1D_DoubleRarefaction()
+{
+	RiemannProblem1D problem{};
+	problem.x_discontinuity = 0;
+	problem.left_prim[0] = 7.0;
+	problem.left_prim[1] = -1.0;
+	problem.left_prim[2] = 0.2;
+	problem.right_prim[0] = 7.0;
+	problem.right_prim[1] = 1.0;
+	problem.right_prim[2] = 0.2;
+	return problem;
+}
+
 void riemann_problem_1d()
 {
 	Runtime runtime;//statement for recording the running time
@@ -69,12 +114,8 @@ void riemann_problem_1d()
 
 	// then its about initializing, lets first initialize a sod test case
 	//you can initialize whatever kind of 1d test case as you like
-	Fluid1d zone1; zone1.primvar[0] = 1.0; zone1.primvar[1] = 0.0; zone1.primvar[2] = 1.0;
-	Fluid1d zone2; zone2.primvar[0] = 0.125; zone2.primvar[1] = 0.0; zone2.primvar[2] = 0.1;
-
-	//Fluid1d zone1; zone1.primvar[0] = 1.0; zone1.primvar[1] = -2.0; zone1.primvar[2] = 0.4;
-	//Fluid1d zone2; zone2.primvar[0] = 1.0; zone2.primvar[1] = 2.0; zone2.primvar[2] = 0.4;
-	ICfor1dRM(fluids, zone1, zone2, block);
+	const RiemannProblem1D problem = RiemannProblem1D_Sod();
+	ICfor1dRM(fluids, problem, block);
 	//initializing part end
 
 	// === 验证 WENO5_AO_poly 与 weno_5th_ao_left/right 的一致性 ===
@@ -157,15 +198,24 @@ void riemann_problem_1d()
 
 void ICfor1dRM(Fluid1d* fluids, Fluid1d zone1, Fluid1d zone2, Block1d block)
 {
+	RiemannProblem1D problem{};
+	problem.x_discontinuity = 0.5 * (block.left + block.right);
+	Copy_Array(problem.left_prim, zone1.primvar, 3);
+	Copy_Array(problem.right_prim, zone2.primvar, 3);
+	ICfor1dRM(fluids, problem, block);
+}
+
+void ICfor1dRM(Fluid1d* fluids, const RiemannProblem1D& problem, Block1d block)
+{
 	for (int i = 0; i < block.nx; i++)
 	{
-		if (i < 0.5 * block.nx)
+		if (fluids[i].cx < problem.x_discontinuity)
 		{
-			Copy_Array(fluids[i].primvar, zone1.primvar, 3);
+			Copy_Array(fluids[i].primvar, const_cast<double*>(problem.left_prim), 3);
 		}
 		else
 		{
-			Copy_Array(fluids[i].primvar, zone2.primvar, 3);
+			Copy_Array(fluids[i].primvar, const_cast<double*>(problem.right_prim), 3);
 		}
 
 	}
@@ -173,6 +223,33 @@ void ICfor1dRM(Fluid1d* fluids, Fluid1d zone1, Fluid1d zone2, Block1d block)
 	for (int i = 0; i < block.nx; i++)
 	{
 		Primvar_to_convar_1D(fluids[i].convar, fluids[i].primvar);
+	}
+}
+
+void ICfor1dRM(GKSFRMesh1D& mesh, const RiemannProblem1D& problem)
+{
+	for (int e = 0; e < mesh.cells; ++e)
+	{
+		for (int i = 0; i < 3; ++i)
+		{
+			const double x = SolutionPointX(mesh, e, i);
+			if (x < problem.x_discontinuity)
+			{
+				SetFRPointPrimitive(
+					mesh.cell[e].Q[i],
+					problem.left_prim[0],
+					problem.left_prim[1],
+					problem.left_prim[2]);
+			}
+			else
+			{
+				SetFRPointPrimitive(
+					mesh.cell[e].Q[i],
+					problem.right_prim[0],
+					problem.right_prim[1],
+					problem.right_prim[2]);
+			}
+		}
 	}
 }
 

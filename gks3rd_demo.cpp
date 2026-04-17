@@ -63,15 +63,21 @@ namespace
 		Initial_stages(block);
 	}
 
-	void Write_Density_Output(Fluid1d* fluids, Block1d block, const char* path)
+	void Write_Density_Output_Tecplot(Fluid1d* fluids, Block1d block, const char* path)
 	{
 		std::ofstream out(path);
 		out << std::setprecision(16);
-		out << "# x rho\n";
+		out << "variables = x,density\n";
+		out << "zone i = " << block.nodex << ", F=POINT\n";
 		for (int i = block.ghost; i < block.nx - block.ghost; ++i)
 		{
 			out << fluids[i].cx << " " << fluids[i].convar[0] << "\n";
 		}
+	}
+
+	std::string StepTaggedPath(const std::string& prefix, int final_step, const char* ext)
+	{
+		return "build/result/" + prefix + "_" + std::to_string(final_step) + ext;
 	}
 
 	void Advance_1D_Case(
@@ -171,8 +177,8 @@ void accuracy_sinwave_1d_gks3rd()
 			fluids, interfaces, fluxes, block,
 			periodic_boundary_left, periodic_boundary_right, bcvalue, 2.0);
 		Compute_Sinwave_Error(fluids, block, error[imesh]);
-		std::string path = "build/result/gks3rd_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".dat";
-		Write_Density_Output(fluids, block, path.c_str());
+		std::string path = "build/result/gks3rd_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".plt";
+		Write_Density_Output_Tecplot(fluids, block, path.c_str());
 
 		delete[] bcvalue;
 		for (int i = 0; i <= block.nx; ++i)
@@ -224,21 +230,13 @@ void riemann_problem_1d_gks3rd()
 	Flux1d** fluxes = Setflux_array(block);
 		SetUniformMesh(block, fluids, interfaces, fluxes);
 
-	Fluid1d zone1;
-	zone1.primvar[0] = 1.0;
-	zone1.primvar[1] = 0.0;
-	zone1.primvar[2] = 1.0;
-	Fluid1d zone2;
-	zone2.primvar[0] = 0.125;
-	zone2.primvar[1] = 0.0;
-	zone2.primvar[2] = 0.1;
-	ICfor1dRM(fluids, zone1, zone2, block);
+	ICfor1dRM(fluids, RiemannProblem1D_Sod(), block);
 
 	Fluid1d* bcvalue = new Fluid1d[2];
 	Advance_1D_Case(
 		fluids, interfaces, fluxes, block,
 		free_boundary_left, free_boundary_right, bcvalue, 0.2);
-	Write_Sod_Output(fluids, block, "result/gks3rd1d_t020.plt");
+	Write_Sod_Output(fluids, block, StepTaggedPath("gks3rd", block.step, ".plt").c_str());
 
 	delete[] bcvalue;
 	for (int i = 0; i <= block.nx; ++i)
