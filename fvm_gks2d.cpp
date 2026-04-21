@@ -1909,6 +1909,7 @@ double Value_Polynomial(int order, double x0, double* coefficient)
 				+ x0 * (coefficient[4] + x0 * (coefficient[5] + coefficient[6] * x0)))));
 	};
 }
+
 double Der1_Polynomial(int order, double x0, double* coefficient)
 {
 	if (order <= 0) { cout << "wrong input for the order of polynomial" << endl; return 0; }

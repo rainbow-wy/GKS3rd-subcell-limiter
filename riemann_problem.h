@@ -5,13 +5,24 @@
 
 struct RiemannProblem1D
 {
+	enum ProfileType
+	{
+		constant_states,
+		shu_osher
+	};
+
 	double x_discontinuity;
 	double left_prim[3];
 	double right_prim[3];
+	ProfileType profile_type;
+	double right_density_amplitude;
+	double right_density_wavenumber;
 };
 
 RiemannProblem1D RiemannProblem1D_Sod();
 RiemannProblem1D RiemannProblem1D_DoubleRarefaction();
+RiemannProblem1D RiemannProblem1D_Leblanc();
+RiemannProblem1D RiemannProblem1D_ShuOsher();
 
 void riemann_problem_1d();
 void ICfor1dRM(Fluid1d* fluids, Fluid1d zone1, Fluid1d zone2, Block1d block);

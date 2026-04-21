@@ -584,16 +584,18 @@ void riemann_problem_1d_gks_subcell()
 	config.use_scaling_limiter = true;
 
 	GKSFRMesh1D mesh;
-	GKSFR_ResizeUniformMesh(mesh, 200, -1.0, 1.0);
+	GKSFR_ResizeUniformMesh(mesh, 400, -5.0, 5.0);
 	//ICfor1dRM(mesh, RiemannProblem1D_Sod());
-	ICfor1dRM(mesh,RiemannProblem1D_DoubleRarefaction());
+	//ICfor1dRM(mesh,RiemannProblem1D_DoubleRarefaction());
+	//ICfor1dRM(mesh,RiemannProblem1D_Leblanc());
+	ICfor1dRM(mesh,RiemannProblem1D_ShuOsher());
 
 	GKSSubcellFrameworkDiag1D diag;
 	int final_step = 0;
-	const bool ok = AdvanceCase(mesh, 0.02, 0.6, gksfr_free, config, diag, true, &final_step);
+	const bool ok = AdvanceCase(mesh, 0.02, 1.8, gksfr_free, config, diag, true, &final_step);
 	if (!ok)
 	{
-		std::cout << "GKS-subcell Sod run stopped because of an invalid state." << std::endl;
+		std::cout << "GKS-subcell run stopped because of an invalid state." << std::endl;
 		return;
 	}
 

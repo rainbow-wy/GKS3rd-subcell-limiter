@@ -306,11 +306,12 @@ void riemann_problem_1d_gksfr()
 	Configure_GKSFR_1D(0.1, 1.0);
 
 	GKSFRMesh1D mesh;
-	GKSFR_ResizeUniformMesh(mesh, 200, 0.0, 1.0);
+	GKSFR_ResizeUniformMesh(mesh, 400, -5.0, 5.0);
 	ICfor1dRM(mesh, RiemannProblem1D_Sod());
+	//ICfor1dRM(mesh, RiemannProblem1D_ShuOsher());
 
 	int final_step = 0;
-	const bool ok = AdvanceCase(mesh, 0.02, 0.2, gksfr_free, true, &final_step);
+	const bool ok = AdvanceCase(mesh, 0.02, 1.8, gksfr_free, true, &final_step);
 	if (!ok)
 	{
 		std::cout << "GKS-FR Sod run stopped because of an invalid state." << std::endl;

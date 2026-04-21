@@ -2,6 +2,8 @@
 
 namespace
 {
+	const double kPi = 3.14159265358979323846;
+
 	double CellCenterX(const GKSFRMesh1D& mesh, int e)
 	{
 		return mesh.x_left + (e + 0.5) * mesh.dx;
@@ -17,6 +19,22 @@ namespace
 		double prim[3] = { rho, u, p };
 		Primvar_to_convar_1D(Q, prim);
 	}
+
+	void PrimitiveForProblemAtX(double* prim, const RiemannProblem1D& problem, double x)
+	{
+		if (x < problem.x_discontinuity)
+		{
+			Copy_Array(prim, const_cast<double*>(problem.left_prim), 3);
+			return;
+		}
+
+		Copy_Array(prim, const_cast<double*>(problem.right_prim), 3);
+		if (problem.profile_type == RiemannProblem1D::shu_osher)
+		{
+			prim[0] = problem.right_prim[0]
+				+ problem.right_density_amplitude * sin(problem.right_density_wavenumber * x);
+		}
+	}
 }
 
 RiemannProblem1D RiemannProblem1D_Sod()
@@ -29,6 +47,7 @@ RiemannProblem1D RiemannProblem1D_Sod()
 	problem.right_prim[0] = 0.125;
 	problem.right_prim[1] = 0.0;
 	problem.right_prim[2] = 0.1;
+	problem.profile_type = RiemannProblem1D::constant_states;
 	return problem;
 }
 
@@ -42,8 +61,43 @@ RiemannProblem1D RiemannProblem1D_DoubleRarefaction()
 	problem.right_prim[0] = 7.0;
 	problem.right_prim[1] = 1.0;
 	problem.right_prim[2] = 0.2;
+	problem.profile_type = RiemannProblem1D::constant_states;
 	return problem;
 }
+
+RiemannProblem1D RiemannProblem1D_Leblanc()
+{
+	RiemannProblem1D problem{};
+	problem.x_discontinuity = 0;
+	problem.left_prim[0] = 2.0;
+	problem.left_prim[1] = 0.0;
+	problem.left_prim[2] = 1.0e9;
+	problem.right_prim[0] = 0.001;
+	problem.right_prim[1] = 0.0;
+	problem.right_prim[2] = 1.0;
+	problem.profile_type = RiemannProblem1D::constant_states;
+	return problem;
+}
+
+RiemannProblem1D RiemannProblem1D_ShuOsher()
+{
+	RiemannProblem1D problem{};
+	// Standard 1D Shu-Osher shock-entropy wave interaction:
+	// left state is the post-shock constant state, and the right density is
+	// 1 + 0.2 sin(5 x) with u = 0, p = 1 for x > -4.
+	problem.x_discontinuity = -4.0;
+	problem.left_prim[0] = 3.857143;
+	problem.left_prim[1] = 2.629369;
+	problem.left_prim[2] = 10.333333;
+	problem.right_prim[0] = 1.0;
+	problem.right_prim[1] = 0.0;
+	problem.right_prim[2] = 1.0;
+	problem.profile_type = RiemannProblem1D::shu_osher;
+	problem.right_density_amplitude = 0.2;
+	problem.right_density_wavenumber = 5.0;
+	return problem;
+}
+
 
 void riemann_problem_1d()
 {
@@ -207,17 +261,11 @@ void ICfor1dRM(Fluid1d* fluids, Fluid1d zone1, Fluid1d zone2, Block1d block)
 
 void ICfor1dRM(Fluid1d* fluids, const RiemannProblem1D& problem, Block1d block)
 {
+	double prim[3];
 	for (int i = 0; i < block.nx; i++)
 	{
-		if (fluids[i].cx < problem.x_discontinuity)
-		{
-			Copy_Array(fluids[i].primvar, const_cast<double*>(problem.left_prim), 3);
-		}
-		else
-		{
-			Copy_Array(fluids[i].primvar, const_cast<double*>(problem.right_prim), 3);
-		}
-
+		PrimitiveForProblemAtX(prim, problem, fluids[i].cx);
+		Copy_Array(fluids[i].primvar, prim, 3);
 	}
 
 	for (int i = 0; i < block.nx; i++)
@@ -228,27 +276,18 @@ void ICfor1dRM(Fluid1d* fluids, const RiemannProblem1D& problem, Block1d block)
 
 void ICfor1dRM(GKSFRMesh1D& mesh, const RiemannProblem1D& problem)
 {
+	double prim[3];
 	for (int e = 0; e < mesh.cells; ++e)
 	{
 		for (int i = 0; i < 3; ++i)
 		{
 			const double x = SolutionPointX(mesh, e, i);
-			if (x < problem.x_discontinuity)
-			{
-				SetFRPointPrimitive(
-					mesh.cell[e].Q[i],
-					problem.left_prim[0],
-					problem.left_prim[1],
-					problem.left_prim[2]);
-			}
-			else
-			{
-				SetFRPointPrimitive(
-					mesh.cell[e].Q[i],
-					problem.right_prim[0],
-					problem.right_prim[1],
-					problem.right_prim[2]);
-			}
+			PrimitiveForProblemAtX(prim, problem, x);
+			SetFRPointPrimitive(
+				mesh.cell[e].Q[i],
+				prim[0],
+				prim[1],
+				prim[2]);
 		}
 	}
 }
