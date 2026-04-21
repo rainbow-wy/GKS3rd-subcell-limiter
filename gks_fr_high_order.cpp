@@ -79,6 +79,15 @@ namespace
 		}
 	}
 
+	void ZeroTraceDerivatives(Point1d& trace)
+	{
+		for (int m = 0; m < 3; ++m)
+		{
+			trace.der1[m] = 0.0;
+			trace.der2[m] = 0.0;
+		}
+	}
+
 	void BuildCenterTraceFromFaces(Interface1d& interface)
 	{
 		// Wrapper for the existing one-stage 3rd-order interface GKS:
@@ -160,6 +169,47 @@ namespace
 		interface.left = trace;
 		interface.right = trace;
 		BuildCenterTraceFromFaces(interface);
+
+		const GKS1d_type old_solver = gks1dsolver;
+		gks1dsolver = gks3rd;
+		GKS(flux, interface, dt);
+		gks1dsolver = old_solver;
+
+		for (int m = 0; m < 3; ++m)
+		{
+			common_flux[m] = flux.f[m] / dt;
+		}
+	}
+
+	void ComputeStrictTransmissiveBoundaryCommonFlux(
+		const GKSFRCell1D& cell,
+		double h,
+		double dt,
+		bool left_boundary,
+		double common_flux[3])
+	{
+		Interface1d interface;
+		Flux1d flux;
+		Zero3(flux.f);
+
+		Point1d trace;
+		FillFaceTrace(trace, cell, h, !left_boundary ? true : false);
+		if (left_boundary)
+		{
+			FillFaceTrace(trace, cell, h, false);
+		}
+		else
+		{
+			FillFaceTrace(trace, cell, h, true);
+		}
+
+		// Strict transmissive closure: extend the boundary face state as a
+		// constant state outside the domain instead of copying the interior
+		// polynomial derivatives across the physical boundary.
+		ZeroTraceDerivatives(trace);
+		interface.left = trace;
+		interface.right = trace;
+		interface.center = trace;
 
 		const GKS1d_type old_solver = gks1dsolver;
 		gks1dsolver = gks3rd;
@@ -398,13 +448,30 @@ void GKSFR_ComputeCommonInterfaceFluxes(
 		return;
 	}
 
-	ComputeBoundaryCommonFlux(mesh.cell[0], mesh.dx, dt, true, face_fluxes[0].F);
+	if (boundary == gksfr_transmissive_strict)
+	{
+		ComputeStrictTransmissiveBoundaryCommonFlux(
+			mesh.cell[0], mesh.dx, dt, true, face_fluxes[0].F);
+	}
+	else
+	{
+		ComputeBoundaryCommonFlux(mesh.cell[0], mesh.dx, dt, true, face_fluxes[0].F);
+	}
 	for (int e = 0; e < mesh.cells - 1; ++e)
 	{
 		GKSFR_ComputeInterfaceCommonFlux(
 			mesh.cell[e], mesh.cell[e + 1], mesh.dx, dt, face_fluxes[e + 1].F);
 	}
-	ComputeBoundaryCommonFlux(mesh.cell[mesh.cells - 1], mesh.dx, dt, false, face_fluxes[mesh.cells].F);
+	if (boundary == gksfr_transmissive_strict)
+	{
+		ComputeStrictTransmissiveBoundaryCommonFlux(
+			mesh.cell[mesh.cells - 1], mesh.dx, dt, false, face_fluxes[mesh.cells].F);
+	}
+	else
+	{
+		ComputeBoundaryCommonFlux(
+			mesh.cell[mesh.cells - 1], mesh.dx, dt, false, face_fluxes[mesh.cells].F);
+	}
 }
 
 void GKSFR_ComputeResiduals(

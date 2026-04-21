@@ -287,7 +287,8 @@ void GKSFluxLimiterApply1D(
 		double F_ig[3];
 		BlendFlux(high_face_fluxes[f].F, low_face_fluxes[f].F, alpha_face, F_ig);
 
-		if (boundary == gksfr_free && (f == 0 || f == cells))
+		if ((boundary == gksfr_free || boundary == gksfr_transmissive_strict) &&
+			(f == 0 || f == cells))
 		{
 			for (int m = 0; m < 3; ++m)
 			{

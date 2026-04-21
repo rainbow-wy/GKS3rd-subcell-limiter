@@ -7,7 +7,8 @@
 enum GKSFRBoundary1D
 {
 	gksfr_periodic,
-	gksfr_free
+	gksfr_free,
+	gksfr_transmissive_strict
 };
 
 struct GKSFRFaceFlux1D

@@ -592,7 +592,7 @@ void riemann_problem_1d_gks_subcell()
 
 	GKSSubcellFrameworkDiag1D diag;
 	int final_step = 0;
-	const bool ok = AdvanceCase(mesh, 0.02, 1.8, gksfr_free, config, diag, true, &final_step);
+	const bool ok = AdvanceCase(mesh, 0.02, 1.8, gksfr_transmissive_strict, config, diag, true, &final_step);
 	if (!ok)
 	{
 		std::cout << "GKS-subcell run stopped because of an invalid state." << std::endl;
