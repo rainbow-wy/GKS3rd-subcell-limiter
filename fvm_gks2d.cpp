@@ -1108,12 +1108,14 @@ void WENO(Point2d& left, Point2d& right, double* wn2, double* wn1, double* w, do
 		{
 			left.convar[i] = var[i];
 			left.der1x[i] = der1[i];
+			left.der2xx[i] = der2[i];
 		}
 	}
 	else
 	{
 		Char_to_convar(left.convar, base_left, var);
 		Char_to_convar(left.der1x, base_left, der1);
+		Char_to_convar(left.der2xx, base_left, der2);
 	}
 
 	// cell right
@@ -1148,12 +1150,14 @@ void WENO(Point2d& left, Point2d& right, double* wn2, double* wn1, double* w, do
 		{
 			right.convar[i] = var[i];
 			right.der1x[i] = der1[i];
+			right.der2xx[i] = der2[i];
 		}
 	}
 	else
 	{
 		Char_to_convar(right.convar, base_right, var);
 		Char_to_convar(right.der1x, base_right, der1);
+		Char_to_convar(right.der2xx, base_right, der2);
 	}
 
 	Check_Order_Reduce_by_Lambda_2D(right.is_reduce_order, right.convar);
@@ -1169,6 +1173,8 @@ void WENO(Point2d& left, Point2d& right, double* wn2, double* wn1, double* w, do
 			left.convar[m] = w[m];
 			right.der1x[m] = 0.0;
 			left.der1x[m] = 0.0;
+			right.der2xx[m] = 0.0;
+			left.der2xx[m] = 0.0;
 		}
 	}
 }
@@ -1467,6 +1473,7 @@ void WENO5_AO(Point2d& left, Point2d& right, double* wn2, double* wn1, double* w
 		{
 			left.convar[i] = var[i];
 			left.der1x[i] = der1[i];
+			left.der2xx[i] = der2[i];
 
 		}
 	}
@@ -1474,6 +1481,7 @@ void WENO5_AO(Point2d& left, Point2d& right, double* wn2, double* wn1, double* w
 	{
 		Char_to_convar(left.convar, base_left, var);
 		Char_to_convar(left.der1x, base_left, der1);
+		Char_to_convar(left.der2xx, base_left, der2);
 
 	}
 
@@ -1509,12 +1517,14 @@ void WENO5_AO(Point2d& left, Point2d& right, double* wn2, double* wn1, double* w
 		{
 			right.convar[i] = var[i];
 			right.der1x[i] = der1[i];
+			right.der2xx[i] = der2[i];
 		}
 	}
 	else
 	{
 		Char_to_convar(right.convar, base_right, var);
 		Char_to_convar(right.der1x, base_right, der1);
+		Char_to_convar(right.der2xx, base_right, der2);
 
 	}
 
@@ -1531,6 +1541,8 @@ void WENO5_AO(Point2d& left, Point2d& right, double* wn2, double* wn1, double* w
 			left.convar[m] = w[m];
 			right.der1x[m] = 0.0;
 			left.der1x[m] = 0.0;
+			right.der2xx[m] = 0.0;
+			left.der2xx[m] = 0.0;
 		}
 	}
 
@@ -1908,6 +1920,7 @@ double Value_Polynomial(int order, double x0, double* coefficient)
 			x0 * (coefficient[2] + x0 * (coefficient[3]
 				+ x0 * (coefficient[4] + x0 * (coefficient[5] + coefficient[6] * x0)))));
 	};
+	return 0.0;
 }
 
 double Der1_Polynomial(int order, double x0, double* coefficient)
@@ -1934,6 +1947,30 @@ double Der1_Polynomial(int order, double x0, double* coefficient)
 			x0 * (2.0 * coefficient[2] + x0 * (3.0 * coefficient[3]
 				+ x0 * (4.0 * coefficient[4] + x0 * (5.0 * coefficient[5] + 6.0 * coefficient[6] * x0))));
 	};
+	return 0.0;
+}
+
+double Der2_Polynomial(int order, double x0, double* coefficient)
+{
+	if (order <= 0) { cout << "wrong input for the order of polynomial" << endl; return 0; }
+	if (order <= 2) { return 0.0; }
+	if (order == 3) { return 2.0 * coefficient[2]; }
+	if (order == 4) { return 2.0 * coefficient[2] + 6.0 * coefficient[3] * x0; }
+	if (order == 5)
+	{
+		return 2.0 * coefficient[2] + x0 * (6.0 * coefficient[3] + 12.0 * coefficient[4] * x0);
+	}
+	if (order == 6)
+	{
+		return 2.0 * coefficient[2] + x0 * (6.0 * coefficient[3]
+			+ x0 * (12.0 * coefficient[4] + 20.0 * coefficient[5] * x0));
+	}
+	if (order == 7)
+	{
+		return 2.0 * coefficient[2] + x0 * (6.0 * coefficient[3]
+			+ x0 * (12.0 * coefficient[4] + x0 * (20.0 * coefficient[5] + 30.0 * coefficient[6] * x0)));
+	}
+	return 0.0;
 }
 
 
@@ -1951,6 +1988,11 @@ double Value_Polynomial_3rd(double x, double coefficient[3])
 double Der1_Polynomial_3rd(double x, double coefficient[3])
 {
 	return coefficient[1] + 2 * coefficient[2] * x;
+}
+
+double Der2_Polynomial_3rd(double coefficient[3])
+{
+	return 2.0 * coefficient[2];
 }
 
 
@@ -2253,8 +2295,8 @@ void WENO5_AO_tangential(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, R
 		{
 			if (gausspoint == 2)
 			{
-				weno_5th_ao_2gauss(re[0].left.convar[i], re[0].left.der1y[i], tmp[0],
-					re[1].left.convar[i], re[1].left.der1y[i], tmp[1],
+				weno_5th_ao_2gauss(re[0].left.convar[i], re[0].left.der1y[i], re[0].left.der2yy[i],
+					re[1].left.convar[i], re[1].left.der1y[i], re[1].left.der2yy[i],
 					wn2.left.convar[i], wn1.left.convar[i], w0.left.convar[i], wp1.left.convar[i], wp2.left.convar[i], h, 2);
 			}
 		}
@@ -2279,6 +2321,7 @@ void WENO5_AO_tangential(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, R
 			{
 				Char_to_convar(re[igauss].left.convar, base_left, var[igauss]);
 				Char_to_convar(re[igauss].left.der1y, base_left, der1[igauss]);
+				Char_to_convar(re[igauss].left.der2yy, base_left, der2[igauss]);
 			}
 		}
 
@@ -2292,6 +2335,8 @@ void WENO5_AO_tangential(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, R
 			weno_5th_ao_2gauss(re[0].left.der1x[i], tmp[0], tmp[1],
 				re[1].left.der1x[i], tmp[2], tmp[3],
 				wn2.left.der1x[i], wn1.left.der1x[i], w0.left.der1x[i], wp1.left.der1x[i], wp2.left.der1x[i], h, 1);
+			re[0].left.der2xy[i] = tmp[0];
+			re[1].left.der2xy[i] = tmp[2];
 		}
 	}
 
@@ -2309,8 +2354,8 @@ void WENO5_AO_tangential(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, R
 		{
 			if (gausspoint == 2)
 			{
-				weno_5th_ao_2gauss(re[0].right.convar[i], re[0].right.der1y[i], tmp[0],
-					re[1].right.convar[i], re[1].right.der1y[i], tmp[1],
+				weno_5th_ao_2gauss(re[0].right.convar[i], re[0].right.der1y[i], re[0].right.der2yy[i],
+					re[1].right.convar[i], re[1].right.der1y[i], re[1].right.der2yy[i],
 					wn2.right.convar[i], wn1.right.convar[i], w0.right.convar[i], wp1.right.convar[i], wp2.right.convar[i], h, 2);
 			}
 		}
@@ -2335,6 +2380,7 @@ void WENO5_AO_tangential(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, R
 			{
 				Char_to_convar(re[igauss].right.convar, base_right, var[igauss]);
 				Char_to_convar(re[igauss].right.der1y, base_right, der1[igauss]);
+				Char_to_convar(re[igauss].right.der2yy, base_right, der2[igauss]);
 			}
 		}
 	}
@@ -2347,6 +2393,8 @@ void WENO5_AO_tangential(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, R
 			weno_5th_ao_2gauss(re[0].right.der1x[i], tmp[0], tmp[1],
 				re[1].right.der1x[i], tmp[2], tmp[3],
 				wn2.right.der1x[i], wn1.right.der1x[i], w0.right.der1x[i], wp1.right.der1x[i], wp2.right.der1x[i], h, 1);
+			re[0].right.der2xy[i] = tmp[0];
+			re[1].right.der2xy[i] = tmp[2];
 		}
 	}
 
@@ -2361,6 +2409,8 @@ void WENO5_AO_tangential(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, R
 				re[num_gauss].left.convar[var] = w0.left.convar[var];
 				re[num_gauss].left.der1x[var] = w0.left.der1x[var];
 				re[num_gauss].left.der1y[var] = 0.0;
+				re[num_gauss].left.der2xy[var] = 0.0;
+				re[num_gauss].left.der2yy[var] = 0.0;
 			}
 		}
 	}
@@ -2376,6 +2426,8 @@ void WENO5_AO_tangential(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, R
 				re[num_gauss].right.convar[var] = w0.right.convar[var];
 				re[num_gauss].right.der1x[var] = w0.right.der1x[var];
 				re[num_gauss].right.der1y[var] = 0.0;
+				re[num_gauss].right.der2xy[var] = 0.0;
+				re[num_gauss].right.der2yy[var] = 0.0;
 			}
 		}
 	}
@@ -2888,6 +2940,7 @@ void Center_3rd_Splitting(Interface2d& interface, double* w, double* wp1, double
 	for (int var = 0; var < 4; var++)
 	{
 		interface.line.center.der1x[var] = (wp1[var] - w[var]) / h;
+		interface.line.center.der2xx[var] = 0.0;
 	}
 }
 void Center_do_nothing_normal(Interface2d* xinterfaces, Interface2d* yinterfaces, Fluid2d* fluids, Block2d block)
@@ -3012,6 +3065,7 @@ void Center_5th_normal(Interface2d& interface, double* wn1, double* w, double* w
 	for (int var = 0; var < 4; var++)
 	{
 		interface.line.center.der1x[var] = (-1.0 / 12.0 * (wp2[var] - wn1[var]) + 1.25 * (wp1[var] - w[var])) / h;
+		interface.line.center.der2xx[var] = (wn1[var] - w[var] - wp1[var] + wp2[var]) / (2.0 * h * h);
 	}
 
 
@@ -3028,7 +3082,7 @@ void Center_5th_normal(Interface2d& interface, double* wn1, double* w, double* w
 		for (int var = 0; var < 4; var++)
 		{
 			interface.line.center.der1x[var] = (wp1[var] - w[var]) / h;
-
+			interface.line.center.der2xx[var] = 0.0;
 		}
 	}
 
@@ -3251,12 +3305,20 @@ void Center_5th_Multi(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, Reco
 		{
 			re[num_gauss].center.convar[var] = Value_Polynomial(5, re[num_gauss].center.x, coe);
 			re[num_gauss].center.der1y[var] = Der1_Polynomial(5, re[num_gauss].center.x, coe);
+			re[num_gauss].center.der2yy[var] = Der2_Polynomial(5, re[num_gauss].center.x, coe);
 		}
 		Polynomial_5th(coe, wn2.center.der1x[var], wn1.center.der1x[var],
 			w0.center.der1x[var], wp1.center.der1x[var], wp2.center.der1x[var], h);
 		for (int num_gauss = 0; num_gauss < gausspoint; num_gauss++)
 		{
 			re[num_gauss].center.der1x[var] = Value_Polynomial(5, re[num_gauss].center.x, coe);
+			re[num_gauss].center.der2xy[var] = Der1_Polynomial(5, re[num_gauss].center.x, coe);
+		}
+		Polynomial_5th(coe, wn2.center.der2xx[var], wn1.center.der2xx[var],
+			w0.center.der2xx[var], wp1.center.der2xx[var], wp2.center.der2xx[var], h);
+		for (int num_gauss = 0; num_gauss < gausspoint; num_gauss++)
+		{
+			re[num_gauss].center.der2xx[var] = Value_Polynomial(5, re[num_gauss].center.x, coe);
 		}
 	}
 
@@ -3270,6 +3332,9 @@ void Center_5th_Multi(Recon2d* re, Recon2d& wn2, Recon2d& wn1, Recon2d& w0, Reco
 				re[num_gauss].center.convar[m] = w0.center.convar[m];
 				re[num_gauss].center.der1x[m] = w0.center.der1x[m];
 				re[num_gauss].center.der1y[m] = 0.0;
+				re[num_gauss].center.der2xx[m] = w0.center.der2xx[m];
+				re[num_gauss].center.der2xy[m] = 0.0;
+				re[num_gauss].center.der2yy[m] = 0.0;
 			}
 		}
 	}
@@ -3282,8 +3347,12 @@ void Center_3rd_Multi(Point2d& gauss, Point2d& wn1, Point2d& w0, Point2d& wp1, d
 		Polynomial_3rd_avg(coe, wn1.convar[var], w0.convar[var], wp1.convar[var], h);
 		gauss.convar[var] = Value_Polynomial_3rd(gauss.x, coe);
 		gauss.der1y[var] = Der1_Polynomial_3rd(gauss.x, coe);
+		gauss.der2yy[var] = Der2_Polynomial_3rd(coe);
 		Polynomial_3rd_avg(coe, wn1.der1x[var], w0.der1x[var], wp1.der1x[var], h);
 		gauss.der1x[var] = Value_Polynomial_3rd(gauss.x, coe);
+		gauss.der2xy[var] = Der1_Polynomial_3rd(gauss.x, coe);
+		Polynomial_3rd_avg(coe, wn1.der2xx[var], w0.der2xx[var], wp1.der2xx[var], h);
+		gauss.der2xx[var] = Value_Polynomial_3rd(gauss.x, coe);
 	}
 
 	Check_Order_Reduce_by_Lambda_2D(gauss.is_reduce_order, gauss.convar);
@@ -3295,6 +3364,9 @@ void Center_3rd_Multi(Point2d& gauss, Point2d& wn1, Point2d& w0, Point2d& wp1, d
 			gauss.convar[m] = w0.convar[m];
 			gauss.der1x[m] = w0.der1x[m];
 			gauss.der1y[m] = 0.0;
+			gauss.der2xx[m] = w0.der2xx[m];
+			gauss.der2xy[m] = 0.0;
+			gauss.der2yy[m] = 0.0;
 		}
 	}
 }
@@ -3329,12 +3401,327 @@ void Calculate_flux(Flux2d_gauss** xfluxes, Flux2d_gauss** yfluxes, Interface2d*
 		}
 	}
 }
+
+namespace
+{
+	const double gks2d_tau_eps = 1.0e-14;
+
+	enum GKS2DMomentSpace
+	{
+		gks2d_full_moment,
+		gks2d_left_half_moment,
+		gks2d_right_half_moment
+	};
+
+	struct GKS2DLocalThirdOrderState
+	{
+		double prim[4];
+		double ax[4];
+		double ay[4];
+		double at[4];
+		double axx[4];
+		double axy[4];
+		double ayy[4];
+		double axt[4];
+		double ayt[4];
+		double att[4];
+		double tau_phys;
+	};
+
+	struct GKS3rdTimeCoeff2D
+	{
+		double eq_g;
+		double eq_grad;
+		double eq_A;
+		double eq_quad;
+		double eq_grad_t;
+		double eq_tt;
+	};
+
+	double GetTauNumericalDissipation2D(const double* prim_left, const double* prim_right, double dt)
+	{
+		double denom = fabs(prim_left[0] / prim_left[3] + prim_right[0] / prim_right[3]);
+		double jump = 0.0;
+		if (denom > 1.0e-14)
+		{
+			jump = fabs(prim_left[0] / prim_left[3] - prim_right[0] / prim_right[3]) / denom;
+		}
+		if (tau_type == Euler)
+		{
+			if (c1_euler <= 0.0 && c2_euler <= 0.0)
+			{
+				return 0.0;
+			}
+			return c1_euler * dt + c2_euler * jump * dt;
+		}
+		if (tau_type == NS || tau_type == Sutherland || tau_type == Power_law)
+		{
+			double tau_n = c2_euler * jump * dt;
+			if (tau_n != tau_n)
+			{
+				tau_n = 0.0;
+			}
+			return tau_n;
+		}
+		return 0.0;
+	}
+
+	double GetTauPhysFromPrim2D(const double* prim)
+	{
+		if ((tau_type != NS && tau_type != Sutherland && tau_type != Power_law) ||
+			((Mu <= 0.0) && (Nu <= 0.0)))
+		{
+			return 0.0;
+		}
+		if ((Mu > 0.0 && Nu > 0.0) || (Mu < 0.0 && Nu < 0.0))
+		{
+			return 0.0;
+		}
+		return Get_Tau_NS(prim[0], prim[3]);
+	}
+
+	void GetExpTimeIntegrals2D(double T, double tau_n, double& e0, double& e1, double& e2)
+	{
+		if (tau_n <= gks2d_tau_eps)
+		{
+			e0 = 0.0;
+			e1 = 0.0;
+			e2 = 0.0;
+			return;
+		}
+		const double eta = exp(-T / tau_n);
+		e0 = tau_n * (1.0 - eta);
+		e1 = tau_n * tau_n - tau_n * (T + tau_n) * eta;
+		e2 = tau_n * tau_n * tau_n - 0.5 * tau_n * eta *
+			(T * T + 2.0 * tau_n * T + 2.0 * tau_n * tau_n);
+	}
+
+	void GetGKS3rdEquilibriumTimeCoeff2D(GKS3rdTimeCoeff2D& tc, double T, double tau_n)
+	{
+		if (tau_n <= gks2d_tau_eps)
+		{
+			tc.eq_g = T;
+			tc.eq_grad = 0.0;
+			tc.eq_A = 0.5 * T * T;
+			tc.eq_quad = 0.0;
+			tc.eq_grad_t = 0.0;
+			tc.eq_tt = T * T * T / 6.0;
+			return;
+		}
+
+		const double tau = tau_n;
+		const double eta = exp(-T / tau);
+		tc.eq_g = T - tau + tau * eta;
+		tc.eq_grad = 2.0 * tau * tau * (1.0 - eta) - tau * T * (1.0 + eta);
+		tc.eq_A = 0.5 * T * T - tau * T + tau * tau * (1.0 - eta);
+		tc.eq_quad = tau * tau * T - 3.0 * tau * tau * tau
+			+ 0.5 * tau * eta * (T * T + 4.0 * tau * T + 6.0 * tau * tau);
+		tc.eq_grad_t = -0.5 * tau * T * T + 2.0 * tau * tau * T - 3.0 * tau * tau * tau
+			+ tau * tau * (T + 3.0 * tau) * eta;
+		tc.eq_tt = T * T * T / 6.0 - 0.5 * tau * T * T + tau * tau * T - tau * tau * tau * (1.0 - eta);
+	}
+
+	void SolveCoeffFromMoment2D(double* coeff, const double* moment, const double* prim)
+	{
+		double rhs[4];
+		double prim_local[4];
+		Copy_Array(rhs, const_cast<double*>(moment), 4);
+		Copy_Array(prim_local, const_cast<double*>(prim), 4);
+		A(coeff, rhs, prim_local);
+	}
+
+	void AddMoment2D(
+		double* accum,
+		GKS2DMomentSpace space,
+		double rho,
+		MMDF& moment,
+		int no_u,
+		int no_v,
+		const double* coeff,
+		double scale)
+	{
+		if (fabs(scale) <= 1.0e-30)
+		{
+			return;
+		}
+		double coeff_local[4];
+		double psi[4];
+		Copy_Array(coeff_local, const_cast<double*>(coeff), 4);
+		if (space == gks2d_full_moment)
+		{
+			G_address(no_u, no_v, 0, psi, coeff_local, moment);
+		}
+		else if (space == gks2d_left_half_moment)
+		{
+			GL_address(no_u, no_v, 0, psi, coeff_local, moment);
+		}
+		else
+		{
+			GR_address(no_u, no_v, 0, psi, coeff_local, moment);
+		}
+		for (int m = 0; m < 4; ++m)
+		{
+			accum[m] += scale * rho * psi[m];
+		}
+	}
+
+	void SolveGKSAt2D(double* at, const double* ax, const double* ay, const double* prim)
+	{
+		double rhs[4] = { 0.0, 0.0, 0.0, 0.0 };
+		MMDF moment(prim[1], prim[2], prim[3]);
+		AddMoment2D(rhs, gks2d_full_moment, prim[0], moment, 1, 0, ax, -1.0);
+		AddMoment2D(rhs, gks2d_full_moment, prim[0], moment, 0, 1, ay, -1.0);
+		SolveCoeffFromMoment2D(at, rhs, prim);
+	}
+
+	void SolveGKSAxt2D(double* axt, const double* axx, const double* axy, const double* prim)
+	{
+		double rhs[4] = { 0.0, 0.0, 0.0, 0.0 };
+		MMDF moment(prim[1], prim[2], prim[3]);
+		AddMoment2D(rhs, gks2d_full_moment, prim[0], moment, 1, 0, axx, -1.0);
+		AddMoment2D(rhs, gks2d_full_moment, prim[0], moment, 0, 1, axy, -1.0);
+		SolveCoeffFromMoment2D(axt, rhs, prim);
+	}
+
+	void SolveGKSAyt2D(double* ayt, const double* axy, const double* ayy, const double* prim)
+	{
+		double rhs[4] = { 0.0, 0.0, 0.0, 0.0 };
+		MMDF moment(prim[1], prim[2], prim[3]);
+		AddMoment2D(rhs, gks2d_full_moment, prim[0], moment, 1, 0, axy, -1.0);
+		AddMoment2D(rhs, gks2d_full_moment, prim[0], moment, 0, 1, ayy, -1.0);
+		SolveCoeffFromMoment2D(ayt, rhs, prim);
+	}
+
+	void SolveGKSAtt2D(double* att, const double* axt, const double* ayt, const double* prim)
+	{
+		double rhs[4] = { 0.0, 0.0, 0.0, 0.0 };
+		MMDF moment(prim[1], prim[2], prim[3]);
+		AddMoment2D(rhs, gks2d_full_moment, prim[0], moment, 1, 0, axt, -1.0);
+		AddMoment2D(rhs, gks2d_full_moment, prim[0], moment, 0, 1, ayt, -1.0);
+		SolveCoeffFromMoment2D(att, rhs, prim);
+	}
+
+	void BuildGKS2DThirdOrderState(
+		GKS2DLocalThirdOrderState& state,
+		const Point2d& point,
+		double tau_phys,
+		bool need_att)
+	{
+		double convar[4];
+		Copy_Array(convar, const_cast<double*>(point.convar), 4);
+		Convar_to_ULambda_2d(state.prim, convar);
+		SolveCoeffFromMoment2D(state.ax, point.der1x, state.prim);
+		SolveCoeffFromMoment2D(state.ay, point.der1y, state.prim);
+		SolveGKSAt2D(state.at, state.ax, state.ay, state.prim);
+		SolveCoeffFromMoment2D(state.axx, point.der2xx, state.prim);
+		SolveCoeffFromMoment2D(state.axy, point.der2xy, state.prim);
+		SolveCoeffFromMoment2D(state.ayy, point.der2yy, state.prim);
+		SolveGKSAxt2D(state.axt, state.axx, state.axy, state.prim);
+		SolveGKSAyt2D(state.ayt, state.axy, state.ayy, state.prim);
+		if (need_att)
+		{
+			SolveGKSAtt2D(state.att, state.axt, state.ayt, state.prim);
+		}
+		else
+		{
+			Array_zero(state.att, 4);
+		}
+		state.tau_phys = tau_phys;
+	}
+
+	void AddInitialTransportContribution2D(
+		double* flux,
+		const GKS2DLocalThirdOrderState& state,
+		GKS2DMomentSpace space,
+		double e0,
+		double e1,
+		double e2)
+	{
+		double unit[4] = { 1.0, 0.0, 0.0, 0.0 };
+		MMDF moment(state.prim[1], state.prim[2], state.prim[3]);
+		const double second_scale = state.tau_phys * e1 + e2;
+
+		AddMoment2D(flux, space, state.prim[0], moment, 1, 0, unit, e0);
+		AddMoment2D(flux, space, state.prim[0], moment, 1, 0, state.at, -state.tau_phys * e0);
+		AddMoment2D(flux, space, state.prim[0], moment, 2, 0, state.ax, -state.tau_phys * e0 - e1);
+		AddMoment2D(flux, space, state.prim[0], moment, 1, 1, state.ay, -state.tau_phys * e0 - e1);
+		AddMoment2D(flux, space, state.prim[0], moment, 2, 0, state.axt, state.tau_phys * e1);
+		AddMoment2D(flux, space, state.prim[0], moment, 1, 1, state.ayt, state.tau_phys * e1);
+		AddMoment2D(flux, space, state.prim[0], moment, 3, 0, state.axx, second_scale);
+		AddMoment2D(flux, space, state.prim[0], moment, 2, 1, state.axy, 2.0 * second_scale);
+		AddMoment2D(flux, space, state.prim[0], moment, 1, 2, state.ayy, second_scale);
+	}
+
+	void ComputeGKS3rdFluxIntegral2DLocal(
+		double* flux,
+		const GKS2DLocalThirdOrderState& gbar_state,
+		const GKS2DLocalThirdOrderState& gl_state,
+		const GKS2DLocalThirdOrderState& gr_state,
+		double T,
+		double tau_num)
+	{
+		Array_zero(flux, 4);
+		double e0, e1, e2;
+		GetExpTimeIntegrals2D(T, tau_num, e0, e1, e2);
+		GKS3rdTimeCoeff2D tc_eq;
+		GetGKS3rdEquilibriumTimeCoeff2D(tc_eq, T, tau_num);
+
+		const double T2 = T * T;
+		double unit[4] = { 1.0, 0.0, 0.0, 0.0 };
+		MMDF moment_bar(gbar_state.prim[1], gbar_state.prim[2], gbar_state.prim[3]);
+
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 1, 0, unit, tc_eq.eq_g);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 2, 0, gbar_state.ax,
+			tc_eq.eq_grad - gbar_state.tau_phys * T);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 1, 1, gbar_state.ay,
+			tc_eq.eq_grad - gbar_state.tau_phys * T);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 1, 0, gbar_state.at,
+			tc_eq.eq_A - gbar_state.tau_phys * T);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 3, 0, gbar_state.axx,
+			tc_eq.eq_quad);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 2, 1, gbar_state.axy,
+			2.0 * tc_eq.eq_quad);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 1, 2, gbar_state.ayy,
+			tc_eq.eq_quad);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 2, 0, gbar_state.axt,
+			tc_eq.eq_grad_t - 0.5 * gbar_state.tau_phys * T2);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 1, 1, gbar_state.ayt,
+			tc_eq.eq_grad_t - 0.5 * gbar_state.tau_phys * T2);
+		AddMoment2D(flux, gks2d_full_moment, gbar_state.prim[0], moment_bar, 1, 0, gbar_state.att,
+			tc_eq.eq_tt - 0.5 * gbar_state.tau_phys * T2);
+
+		AddInitialTransportContribution2D(flux, gl_state, gks2d_left_half_moment, e0, e1, e2);
+		AddInitialTransportContribution2D(flux, gr_state, gks2d_right_half_moment, e0, e1, e2);
+	}
+
+	void RecoverGKS3rdFluxTimeDerivatives2D(
+		double* F,
+		double* Ft,
+		double* Ftt,
+		const double* I_dt,
+		const double* I_2dt3,
+		const double* I_dt3,
+		double dt)
+	{
+		for (int m = 0; m < 4; ++m)
+		{
+			F[m] = (I_dt[m] - 4.5 * I_2dt3[m] + 9.0 * I_dt3[m]) / dt;
+			Ft[m] = -9.0 * (I_dt[m] - 4.0 * I_2dt3[m] + 5.0 * I_dt3[m]) / (dt * dt);
+			Ftt[m] = 9.0 * (3.0 * I_dt[m] - 9.0 * I_2dt3[m] + 9.0 * I_dt3[m]) / (dt * dt * dt);
+		}
+	}
+}
+
 void GKS2D_smooth(Flux2d& flux, Recon2d& interface, double dt)
 {
 	if (gks2dsolver == nothing_2d)
 	{
 		cout << "no gks solver specify" << endl;
 		exit(0);
+	}
+	for (int m = 0; m < 4; ++m)
+	{
+		flux.der2f[m] = 0.0;
 	}
 	double Flux[2][4];
 	//change conservative variables to rho u lambda
@@ -3495,6 +3882,53 @@ void GKS2D(Flux2d& flux, Recon2d& interface, double dt)
 	{
 		cout << "no gks solver specify" << endl;
 		exit(0);
+	}
+	for (int m = 0; m < 4; ++m)
+	{
+		flux.der2f[m] = 0.0;
+	}
+	if (gks2dsolver == gks3rd_2d)
+	{
+		double convar_left[4], convar_right[4], convar_bar[4];
+		double prim_left[4], prim_right[4], prim_bar[4];
+		for (int m = 0; m < 4; ++m)
+		{
+			convar_left[m] = interface.left.convar[m];
+			convar_right[m] = interface.right.convar[m];
+			convar_bar[m] = interface.center.convar[m];
+		}
+		Convar_to_ULambda_2d(prim_left, convar_left);
+		Convar_to_ULambda_2d(prim_right, convar_right);
+		Convar_to_ULambda_2d(prim_bar, convar_bar);
+
+		const double tau_phys_left = GetTauPhysFromPrim2D(prim_left);
+		const double tau_phys_right = GetTauPhysFromPrim2D(prim_right);
+		const double tau_phys_bar = GetTauPhysFromPrim2D(prim_bar);
+		const double tau_num = tau_phys_bar + GetTauNumericalDissipation2D(prim_left, prim_right, dt);
+
+		GKS2DLocalThirdOrderState left_state, right_state, bar_state;
+		BuildGKS2DThirdOrderState(left_state, interface.left, tau_phys_left, false);
+		BuildGKS2DThirdOrderState(right_state, interface.right, tau_phys_right, false);
+		BuildGKS2DThirdOrderState(bar_state, interface.center, tau_phys_bar, true);
+
+		double I_dt[4];
+		double I_2dt3[4];
+		double I_dt3[4];
+		double F0[4];
+		double Ft[4];
+		double Ftt[4];
+		ComputeGKS3rdFluxIntegral2DLocal(I_dt, bar_state, left_state, right_state, dt, tau_num);
+		ComputeGKS3rdFluxIntegral2DLocal(I_2dt3, bar_state, left_state, right_state, 2.0 * dt / 3.0, tau_num);
+		ComputeGKS3rdFluxIntegral2DLocal(I_dt3, bar_state, left_state, right_state, dt / 3.0, tau_num);
+		RecoverGKS3rdFluxTimeDerivatives2D(F0, Ft, Ftt, I_dt, I_2dt3, I_dt3, dt);
+
+		for (int m = 0; m < 4; ++m)
+		{
+			flux.f[m] = I_dt[m];
+			flux.derf[m] = Ft[m];
+			flux.der2f[m] = Ftt[m];
+		}
+		return;
 	}
 	double Flux[2][4];
 	double convar_left[4], convar_right[4], convar0[4];
@@ -4000,6 +4434,13 @@ void S1O2_2D(Block2d& block)
 	block.timecoefficient[0][0][1] = 0.5;
 
 }
+void S1O3_2D(Block2d& block)
+{
+	block.stages = 1;
+	block.timecoefficient[0][0][0] = 1.0;
+	block.timecoefficient[0][0][1] = 0.0;
+	block.timecoefficient[0][0][2] = 0.0;
+}
 void RK2_2D(Block2d& block)
 {
 	block.stages = 2;
@@ -4083,12 +4524,21 @@ Interface2d* Setinterface_array(Block2d block)
 			{
 				var[i * (block.ny + 1) + j].line.left.der1x[k] = 0.0;
 				var[i * (block.ny + 1) + j].line.left.der1y[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.left.der2xx[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.left.der2xy[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.left.der2yy[k] = 0.0;
 
 				var[i * (block.ny + 1) + j].line.right.der1x[k] = 0.0;
 				var[i * (block.ny + 1) + j].line.right.der1y[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.right.der2xx[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.right.der2xy[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.right.der2yy[k] = 0.0;
 
 				var[i * (block.ny + 1) + j].line.center.der1x[k] = 0.0;
 				var[i * (block.ny + 1) + j].line.center.der1y[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.center.der2xx[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.center.der2xy[k] = 0.0;
+				var[i * (block.ny + 1) + j].line.center.der2yy[k] = 0.0;
 			}
 		}
 	}
@@ -4121,6 +4571,7 @@ Flux2d_gauss** Setflux_gauss_array(Block2d block)
 					{
 						var[i * (block.ny + 1) + j][k].gauss[0].f[m] = 0.0;
 						var[i * (block.ny + 1) + j][k].gauss[0].derf[m] = 0.0;
+						var[i * (block.ny + 1) + j][k].gauss[0].der2f[m] = 0.0;
 
 					}
 				}
@@ -4133,6 +4584,7 @@ Flux2d_gauss** Setflux_gauss_array(Block2d block)
 						{
 							var[i * (block.ny + 1) + j][k].gauss[num_gauss].f[m] = 0.0;
 							var[i * (block.ny + 1) + j][k].gauss[num_gauss].derf[m] = 0.0;
+							var[i * (block.ny + 1) + j][k].gauss[num_gauss].der2f[m] = 0.0;
 						}
 					}
 				}
@@ -4322,10 +4774,11 @@ void Update(Fluid2d* fluids, Flux2d_gauss** xfluxes, Flux2d_gauss** yfluxes, Blo
 					for (int k = 0; k < stage + 1; k++)
 					{
 	
-						Flux = Flux
+							Flux = Flux
 							+ gauss_weight[num_gauss] *
 							(block.timecoefficient[stage][k][0] * xfluxes[i * (block.ny + 1) + j][k].gauss[num_gauss].f[var]
-								+ block.timecoefficient[stage][k][1] * xfluxes[i * (block.ny + 1) + j][k].gauss[num_gauss].derf[var]);
+								+ block.timecoefficient[stage][k][1] * xfluxes[i * (block.ny + 1) + j][k].gauss[num_gauss].derf[var]
+								+ block.timecoefficient[stage][k][2] * xfluxes[i * (block.ny + 1) + j][k].gauss[num_gauss].der2f[var]);
 
 					}
 					xfluxes[i * (block.ny + 1) + j][stage].gauss[num_gauss].x[var] = Flux;
@@ -4348,10 +4801,11 @@ void Update(Fluid2d* fluids, Flux2d_gauss** xfluxes, Flux2d_gauss** yfluxes, Blo
 					double Flux = 0.0;
 					for (int k = 0; k < stage + 1; k++)
 					{
-						Flux = Flux
+							Flux = Flux
 							+ gauss_weight[num_gauss] *
 							(block.timecoefficient[stage][k][0] * yfluxes[i * (block.ny + 1) + j][k].gauss[num_gauss].f[var]
-								+ block.timecoefficient[stage][k][1] * yfluxes[i * (block.ny + 1) + j][k].gauss[num_gauss].derf[var]);
+								+ block.timecoefficient[stage][k][1] * yfluxes[i * (block.ny + 1) + j][k].gauss[num_gauss].derf[var]
+								+ block.timecoefficient[stage][k][2] * yfluxes[i * (block.ny + 1) + j][k].gauss[num_gauss].der2f[var]);
 					}
 					yfluxes[i * (block.ny + 1) + j][stage].gauss[num_gauss].x[var] = Flux;
 				}

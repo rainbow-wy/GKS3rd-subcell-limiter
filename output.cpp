@@ -575,6 +575,10 @@ void output_record(Block2d block)
 		{
 			out << "gks2nd " << endl;
 		}
+		if (gks2dsolver == gks3rd_2d)
+		{
+			out << "gks3rd " << endl;
+		}
 	}
 
 	out << "# the limitation for current scheme is " << endl;
@@ -821,4 +825,3 @@ void continue_compute_output_param(Block2d block)
 	out << setprecision(14);
 	out << block.t << endl;//simulation time
 }
-

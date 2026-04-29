@@ -6,6 +6,13 @@ GKSSubcellLowOrderType low_order_type = KFVS1;
 
 namespace
 {
+	void ReflectNormalVelocityState(const double in_Q[3], double out_Q[3])
+	{
+		out_Q[0] = in_Q[0];
+		out_Q[1] = -in_Q[1];
+		out_Q[2] = in_Q[2];
+	}
+
 	void ZeroState(double out[3])
 	{
 		for (int m = 0; m < 3; ++m)
@@ -102,6 +109,23 @@ void GKSSubcellComputeLowFaceFluxes1D(
 		{
 			face_fluxes[cells].F[m] = face_fluxes[0].F[m];
 		}
+	}
+	else if (boundary == gksfr_reflective)
+	{
+		double mirrored_Q[3];
+		ReflectNormalVelocityState(branch.cell[0].low_dof[0], mirrored_Q);
+		FaceFluxByMode(
+			mirrored_Q,
+			branch.cell[0].low_dof[0],
+			dt,
+			face_fluxes[0].F);
+
+		ReflectNormalVelocityState(branch.cell[cells - 1].low_dof[2], mirrored_Q);
+		FaceFluxByMode(
+			branch.cell[cells - 1].low_dof[2],
+			mirrored_Q,
+			dt,
+			face_fluxes[cells].F);
 	}
 	else
 	{

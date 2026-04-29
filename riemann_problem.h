@@ -8,11 +8,14 @@ struct RiemannProblem1D
 	enum ProfileType
 	{
 		constant_states,
-		shu_osher
+		shu_osher,
+		three_constant_states
 	};
 
 	double x_discontinuity;
+	double x_discontinuity_2;
 	double left_prim[3];
+	double middle_prim[3];
 	double right_prim[3];
 	ProfileType profile_type;
 	double right_density_amplitude;
@@ -23,6 +26,8 @@ RiemannProblem1D RiemannProblem1D_Sod();
 RiemannProblem1D RiemannProblem1D_DoubleRarefaction();
 RiemannProblem1D RiemannProblem1D_Leblanc();
 RiemannProblem1D RiemannProblem1D_ShuOsher();
+RiemannProblem1D RiemannProblem1D_BlastWave();
+RiemannProblem1D RiemannProblem1D_SedovBlastWave(double x_left, double dx);
 
 void riemann_problem_1d();
 void ICfor1dRM(Fluid1d* fluids, Fluid1d zone1, Fluid1d zone2, Block1d block);

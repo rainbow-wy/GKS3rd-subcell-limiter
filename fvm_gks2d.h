@@ -3,7 +3,7 @@
 extern int gausspoint;
 extern double *gauss_loc;
 extern double *gauss_weight;
-enum GKS2d_type { nothing_2d, kfvs1st_2d, kfvs2nd_2d, gks1st_2d, gks2nd_2d};
+enum GKS2d_type { nothing_2d, kfvs1st_2d, kfvs2nd_2d, gks1st_2d, gks2nd_2d, gks3rd_2d};
 extern GKS2d_type gks2dsolver;
 
 
@@ -58,6 +58,9 @@ public:
 	double convar[4];
 	double der1x[4];
 	double der1y[4];
+	double der2xx[4];
+	double der2xy[4];
+	double der2yy[4];
 	double x;
 	double y;
 	double normal[2];
@@ -97,6 +100,7 @@ public:
 	double x[4];
 	double f[4];
 	double derf[4];
+	double der2f[4];
 	double length;
 	double normal[2];
 };
@@ -287,6 +291,7 @@ extern TimeMarchingCoefficient_2d timecoe_list_2d;
 
 void S1O1_2D(Block2d &block);
 void S1O2_2D(Block2d& block);
+void S1O3_2D(Block2d& block);
 void RK2_2D (Block2d& block);
 void S2O4_2D(Block2d &block);
 void RK4_2D(Block2d& block);

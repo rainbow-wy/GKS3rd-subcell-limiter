@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fvm_gks1d.h"
+#include "fvm_gks2d.h"
 
 #include <vector>
 
@@ -8,7 +9,8 @@ enum GKSFRBoundary1D
 {
 	gksfr_periodic,
 	gksfr_free,
-	gksfr_transmissive_strict
+	gksfr_transmissive_strict,
+	gksfr_reflective
 };
 
 struct GKSFRFaceFlux1D
@@ -99,3 +101,114 @@ void GKSFR_AdvanceOneStep(
 	GKSFRMesh1D& mesh,
 	double dt,
 	GKSFRBoundary1D boundary);
+
+enum GKSFRBoundary2D
+{
+	gksfr2d_periodic
+};
+
+struct GKSFRFaceFlux2D
+{
+	double F[3][4];
+};
+
+struct GKSFRCell2D
+{
+	// Tensor-product GL solution points: Q[x_point][y_point][conservative_var].
+	double Q[3][3][4];
+
+	// Cell-center quadratic expansion recovered from the nine GL points.
+	double Qc[4];
+	double Qx[4];
+	double Qy[4];
+	double Qxx[4];
+	double Qxy[4];
+	double Qyy[4];
+
+	double prim[4];
+	double tau;
+
+	// Cell-internal 2D one-stage third-order GKS coefficients.
+	double ax[4];
+	double ay[4];
+	double A[4];
+	double bxx[4];
+	double bxy[4];
+	double byy[4];
+	double cx[4];
+	double cy[4];
+	double d[4];
+
+	// Time-averaged internal flux polynomial coefficients in physical x/y.
+	// coeff order: 00, 10, 01, 20, 11, 02.
+	double Fcoef[6][4];
+	double Gcoef[6][4];
+	double F_gl[3][3][4];
+	double G_gl[3][3][4];
+
+	// Local discontinuous flux extrapolated to element faces.
+	// x face: 0 left, 1 right, indexed by y GL point.
+	// y face: 0 bottom, 1 top, indexed by x GL point.
+	double F_face_local[2][3][4];
+	double G_face_local[2][3][4];
+
+	double residual[3][3][4];
+
+	GKSFRCell2D();
+};
+
+struct GKSFRMesh2D
+{
+	int cells_x;
+	int cells_y;
+	double x_left;
+	double x_right;
+	double y_bottom;
+	double y_top;
+	double dx;
+	double dy;
+	std::vector<GKSFRCell2D> cell;
+
+	GKSFRMesh2D();
+};
+
+void GKSFR_ResizeUniformMesh2D(
+	GKSFRMesh2D& mesh,
+	int cells_x,
+	int cells_y,
+	double x_left,
+	double x_right,
+	double y_bottom,
+	double y_top);
+
+int GKSFR_CellIndex2D(const GKSFRMesh2D& mesh, int i, int j);
+double GKSFR_CellCenterX2D(const GKSFRMesh2D& mesh, int i);
+double GKSFR_CellCenterY2D(const GKSFRMesh2D& mesh, int j);
+double GKSFR_SolutionPointX2D(const GKSFRMesh2D& mesh, int i, int p);
+double GKSFR_SolutionPointY2D(const GKSFRMesh2D& mesh, int j, int q);
+
+void GKSFR_ComputeCellCenterData2D(GKSFRCell2D& cell, double hx, double hy);
+void GKSFR_ComputeInternalGKSCoeffs2D(GKSFRCell2D& cell);
+void GKSFR_ComputeInternalTimeAveragedFluxAtGLPoints2D(GKSFRCell2D& cell, double hx, double hy, double dt);
+void GKSFR_ExtrapolateLocalFluxToFaces2D(GKSFRCell2D& cell);
+void GKSFR_PrepareCell2D(GKSFRCell2D& cell, double hx, double hy, double dt);
+void GKSFR_PrepareCells2D(GKSFRMesh2D& mesh, double dt);
+
+void GKSFR_ComputeCommonInterfaceFluxes2D(
+	const GKSFRMesh2D& mesh,
+	double dt,
+	GKSFRBoundary2D boundary,
+	std::vector<GKSFRFaceFlux2D>& x_face_fluxes,
+	std::vector<GKSFRFaceFlux2D>& y_face_fluxes);
+
+void GKSFR_ComputeResiduals2D(
+	GKSFRMesh2D& mesh,
+	const std::vector<GKSFRFaceFlux2D>& x_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& y_face_fluxes);
+
+void GKSFR_UpdateSolutionPoints2D(GKSFRMesh2D& mesh, double dt);
+
+void GKSFR_AdvanceOneStep2D(
+	GKSFRMesh2D& mesh,
+	double dt,
+	GKSFRBoundary2D boundary);

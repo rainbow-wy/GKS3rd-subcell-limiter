@@ -15,12 +15,43 @@ namespace
 		}
 	}
 
+	void Zero4(double* a)
+	{
+		for (int m = 0; m < 4; ++m)
+		{
+			a[m] = 0.0;
+		}
+	}
+
 	void Copy3(double* dst, const double* src)
 	{
 		for (int m = 0; m < 3; ++m)
 		{
 			dst[m] = src[m];
 		}
+	}
+
+	void Copy4(double* dst, const double* src)
+	{
+		for (int m = 0; m < 4; ++m)
+		{
+			dst[m] = src[m];
+		}
+	}
+
+	double LagrangeAt(int basis_id, double s)
+	{
+		const double a_gl = kGLNode;
+		const double a2 = a_gl * a_gl;
+		if (basis_id == 0)
+		{
+			return s * (s - a_gl) / (2.0 * a2);
+		}
+		if (basis_id == 1)
+		{
+			return 1.0 - s * s / a2;
+		}
+		return s * (s + a_gl) / (2.0 * a2);
 	}
 
 	double LagrangeDerivAt(int basis_id, double s)
@@ -38,6 +69,26 @@ namespace
 		return (2.0 * s + a_gl) / (2.0 * a2);
 	}
 
+	double LagrangeSecondDerivAt(int basis_id)
+	{
+		const double a2 = kGLNode * kGLNode;
+		if (basis_id == 1)
+		{
+			return -2.0 / a2;
+		}
+		return 1.0 / a2;
+	}
+
+	double RadauLeft(double s)
+	{
+		return (-5.0 * s * s * s + 3.0 * s * s + 3.0 * s - 1.0) / 4.0;
+	}
+
+	double RadauRight(double s)
+	{
+		return (5.0 * s * s * s + 3.0 * s * s - 3.0 * s - 1.0) / 4.0;
+	}
+
 	double RadauLeftDeriv(double s)
 	{
 		return (-15.0 * s * s + 6.0 * s + 3.0) / 4.0;
@@ -51,6 +102,14 @@ namespace
 	void AccumulateMoment(double* dst, const double* src, double scale)
 	{
 		for (int m = 0; m < 3; ++m)
+		{
+			dst[m] += scale * src[m];
+		}
+	}
+
+	void AccumulateMoment4(double* dst, const double* src, double scale)
+	{
+		for (int m = 0; m < 4; ++m)
 		{
 			dst[m] += scale * src[m];
 		}
@@ -86,6 +145,11 @@ namespace
 			trace.der1[m] = 0.0;
 			trace.der2[m] = 0.0;
 		}
+	}
+
+	void ReflectNormalVelocity(Point1d& trace)
+	{
+		trace.convar[1] = -trace.convar[1];
 	}
 
 	void BuildCenterTraceFromFaces(Interface1d& interface)
@@ -220,6 +284,428 @@ namespace
 		{
 			common_flux[m] = flux.f[m] / dt;
 		}
+	}
+
+	void ComputeReflectiveBoundaryCommonFlux(
+		const GKSFRCell1D& cell,
+		double h,
+		double dt,
+		bool left_boundary,
+		double common_flux[3])
+	{
+		Interface1d interface;
+		Flux1d flux;
+		Zero3(flux.f);
+
+		Point1d interior_trace;
+		FillFaceTrace(interior_trace, cell, h, !left_boundary ? true : false);
+		if (left_boundary)
+		{
+			FillFaceTrace(interior_trace, cell, h, false);
+		}
+		else
+		{
+			FillFaceTrace(interior_trace, cell, h, true);
+		}
+
+		Point1d exterior_trace = interior_trace;
+		ZeroTraceDerivatives(interior_trace);
+		ZeroTraceDerivatives(exterior_trace);
+		ReflectNormalVelocity(exterior_trace);
+
+		interface.left = exterior_trace;
+		interface.right = interior_trace;
+		interface.center = interior_trace;
+
+		const GKS1d_type old_solver = gks1dsolver;
+		gks1dsolver = gks3rd;
+		GKS(flux, interface, dt);
+		gks1dsolver = old_solver;
+
+		for (int m = 0; m < 3; ++m)
+		{
+			common_flux[m] = flux.f[m] / dt;
+		}
+	}
+
+	void Moment2D(double* moment, int no_u, int no_v, const double* coeff, const double* prim)
+	{
+		double coeff_local[4];
+		Copy4(coeff_local, coeff);
+		MMDF m(prim[1], prim[2], prim[3]);
+		G_address(no_u, no_v, 0, moment, coeff_local, m);
+	}
+
+	void AddMoment2D(double* accum, int no_u, int no_v, const double* coeff, const double* prim, double scale)
+	{
+		if (std::fabs(scale) <= 1.0e-30)
+		{
+			return;
+		}
+		double moment[4];
+		Moment2D(moment, no_u, no_v, coeff, prim);
+		AccumulateMoment4(accum, moment, prim[0] * scale);
+	}
+
+	void SolveCoeffFromMoment2D(double* coeff, const double* moment, const double* prim)
+	{
+		double rhs[4];
+		double prim_local[4];
+		Copy4(rhs, moment);
+		Copy4(prim_local, prim);
+		A(coeff, rhs, prim_local);
+	}
+
+	void SolveTimeCoeff2D(double* coeff, const double* x_coeff, const double* y_coeff, const double* prim)
+	{
+		double rhs[4]{ 0.0, 0.0, 0.0, 0.0 };
+		AddMoment2D(rhs, 1, 0, x_coeff, prim, -1.0);
+		AddMoment2D(rhs, 0, 1, y_coeff, prim, -1.0);
+		SolveCoeffFromMoment2D(coeff, rhs, prim);
+	}
+
+	void RotateGlobalToYLocal(double* dst, const double* src)
+	{
+		dst[0] = src[0];
+		dst[1] = src[2];
+		dst[2] = -src[1];
+		dst[3] = src[3];
+	}
+
+	void RotateYLocalToGlobal(double* dst, const double* src)
+	{
+		dst[0] = src[0];
+		dst[1] = -src[2];
+		dst[2] = src[1];
+		dst[3] = src[3];
+	}
+
+	void RotateGlobalToYLocalScaled(double* dst, const double* src, double scale)
+	{
+		double tmp[4];
+		RotateGlobalToYLocal(tmp, src);
+		for (int m = 0; m < 4; ++m)
+		{
+			dst[m] = scale * tmp[m];
+		}
+	}
+
+	void EvaluateCellStateAtXY(Point2d& trace, const GKSFRCell2D& cell, double hx, double hy, double xbar, double ybar)
+	{
+		const double r = 2.0 * xbar / hx;
+		const double s = 2.0 * ybar / hy;
+		for (int m = 0; m < 4; ++m)
+		{
+			trace.convar[m] = 0.0;
+			trace.der1x[m] = 0.0;
+			trace.der1y[m] = 0.0;
+			trace.der2xx[m] = 0.0;
+			trace.der2xy[m] = 0.0;
+			trace.der2yy[m] = 0.0;
+			for (int i = 0; i < 3; ++i)
+			{
+				const double li = LagrangeAt(i, r);
+				const double lix = (2.0 / hx) * LagrangeDerivAt(i, r);
+				const double lixx = (4.0 / (hx * hx)) * LagrangeSecondDerivAt(i);
+				for (int j = 0; j < 3; ++j)
+				{
+					const double lj = LagrangeAt(j, s);
+					const double ljy = (2.0 / hy) * LagrangeDerivAt(j, s);
+					const double ljyy = (4.0 / (hy * hy)) * LagrangeSecondDerivAt(j);
+					const double q = cell.Q[i][j][m];
+					trace.convar[m] += q * li * lj;
+					trace.der1x[m] += q * lix * lj;
+					trace.der1y[m] += q * li * ljy;
+					trace.der2xx[m] += q * lixx * lj;
+					trace.der2xy[m] += q * lix * ljy;
+					trace.der2yy[m] += q * li * ljyy;
+				}
+			}
+		}
+		trace.x = xbar;
+		trace.y = ybar;
+		trace.normal[0] = 1.0;
+		trace.normal[1] = 0.0;
+		trace.is_reduce_order = false;
+	}
+
+	int PeriodicIndex(int i, int n)
+	{
+		int r = i % n;
+		if (r < 0)
+		{
+			r += n;
+		}
+		return r;
+	}
+
+	void FillXFaceTrace(Point2d& trace, const GKSFRCell2D& cell, double hx, double hy, bool right_face, double s)
+	{
+		const double xbar = right_face ? 0.5 * hx : -0.5 * hx;
+		const double ybar = 0.5 * hy * s;
+		EvaluateCellStateAtXY(trace, cell, hx, hy, xbar, ybar);
+	}
+
+	void FillYFaceTraceLocal(Point2d& trace, const GKSFRCell2D& cell, double hx, double hy, bool top_face, double r)
+	{
+		Point2d global_trace;
+		const double xbar = 0.5 * hx * r;
+		const double ybar = top_face ? 0.5 * hy : -0.5 * hy;
+		EvaluateCellStateAtXY(global_trace, cell, hx, hy, xbar, ybar);
+
+		RotateGlobalToYLocal(trace.convar, global_trace.convar);
+		RotateGlobalToYLocal(trace.der1x, global_trace.der1y);
+		RotateGlobalToYLocalScaled(trace.der1y, global_trace.der1x, -1.0);
+		RotateGlobalToYLocal(trace.der2xx, global_trace.der2yy);
+		RotateGlobalToYLocalScaled(trace.der2xy, global_trace.der2xy, -1.0);
+		RotateGlobalToYLocal(trace.der2yy, global_trace.der2xx);
+		trace.x = ybar;
+		trace.y = -xbar;
+		trace.normal[0] = 1.0;
+		trace.normal[1] = 0.0;
+		trace.is_reduce_order = false;
+	}
+
+	void BuildXFaceTraceFR(
+		Recon2d& interface,
+		const GKSFRMesh2D& mesh,
+		int face_i,
+		int cell_j,
+		double s)
+	{
+		const int left_i = PeriodicIndex(face_i - 1, mesh.cells_x);
+		const int right_i = PeriodicIndex(face_i, mesh.cells_x);
+		const int j = PeriodicIndex(cell_j, mesh.cells_y);
+		FillXFaceTrace(interface.left, mesh.cell[GKSFR_CellIndex2D(mesh, left_i, j)], mesh.dx, mesh.dy, true, s);
+		FillXFaceTrace(interface.right, mesh.cell[GKSFR_CellIndex2D(mesh, right_i, j)], mesh.dx, mesh.dy, false, s);
+	}
+
+	void BuildYFaceTraceFRLocal(
+		Recon2d& interface,
+		const GKSFRMesh2D& mesh,
+		int cell_i,
+		int face_j,
+		double r)
+	{
+		const int i = PeriodicIndex(cell_i, mesh.cells_x);
+		const int bottom_j = PeriodicIndex(face_j - 1, mesh.cells_y);
+		const int top_j = PeriodicIndex(face_j, mesh.cells_y);
+		FillYFaceTraceLocal(interface.left, mesh.cell[GKSFR_CellIndex2D(mesh, i, bottom_j)], mesh.dx, mesh.dy, true, r);
+		FillYFaceTraceLocal(interface.right, mesh.cell[GKSFR_CellIndex2D(mesh, i, top_j)], mesh.dx, mesh.dy, false, r);
+	}
+
+	void BuildCenterDerivativeFromFaces(
+		double* center_der,
+		const double* left_der,
+		const double* right_der,
+		const double* prim_left,
+		const double* prim_right,
+		MMDF& ml,
+		MMDF& mr)
+	{
+		double left_coeff[4];
+		double right_coeff[4];
+		SolveCoeffFromMoment2D(left_coeff, left_der, prim_left);
+		SolveCoeffFromMoment2D(right_coeff, right_der, prim_right);
+
+		double left_moment[4];
+		double right_moment[4];
+		GL_address(0, 0, 0, left_moment, left_coeff, ml);
+		GR_address(0, 0, 0, right_moment, right_coeff, mr);
+		for (int m = 0; m < 4; ++m)
+		{
+			center_der[m] = prim_left[0] * left_moment[m] + prim_right[0] * right_moment[m];
+		}
+	}
+
+	void BuildCenterTraceFromFaces2D(Recon2d& interface)
+	{
+		double prim_left[4];
+		double prim_right[4];
+		double convar_left[4];
+		double convar_right[4];
+		Copy4(convar_left, interface.left.convar);
+		Copy4(convar_right, interface.right.convar);
+		Convar_to_ULambda_2d(prim_left, convar_left);
+		Convar_to_ULambda_2d(prim_right, convar_right);
+
+		MMDF ml(prim_left[1], prim_left[2], prim_left[3]);
+		MMDF mr(prim_right[1], prim_right[2], prim_right[3]);
+		Collision(interface.center.convar, prim_left[0], prim_right[0], ml, mr);
+
+		BuildCenterDerivativeFromFaces(
+			interface.center.der1x,
+			interface.left.der1x,
+			interface.right.der1x,
+			prim_left,
+			prim_right,
+			ml,
+			mr);
+		BuildCenterDerivativeFromFaces(
+			interface.center.der1y,
+			interface.left.der1y,
+			interface.right.der1y,
+			prim_left,
+			prim_right,
+			ml,
+			mr);
+		BuildCenterDerivativeFromFaces(
+			interface.center.der2xx,
+			interface.left.der2xx,
+			interface.right.der2xx,
+			prim_left,
+			prim_right,
+			ml,
+			mr);
+		BuildCenterDerivativeFromFaces(
+			interface.center.der2xy,
+			interface.left.der2xy,
+			interface.right.der2xy,
+			prim_left,
+			prim_right,
+			ml,
+			mr);
+		BuildCenterDerivativeFromFaces(
+			interface.center.der2yy,
+			interface.left.der2yy,
+			interface.right.der2yy,
+			prim_left,
+			prim_right,
+			ml,
+			mr);
+		interface.center.normal[0] = 1.0;
+		interface.center.normal[1] = 0.0;
+		interface.center.is_reduce_order = false;
+	}
+
+	void ComputeInterfaceCommonFluxPreparedCenter2D(
+		Recon2d& interface,
+		double dt,
+		bool x_normal,
+		double common_flux[4])
+	{
+		interface.normal[0] = 1.0;
+		interface.normal[1] = 0.0;
+
+		Flux2d flux;
+		Zero4(flux.f);
+		Zero4(flux.derf);
+		Zero4(flux.der2f);
+		flux.normal[0] = 1.0;
+		flux.normal[1] = 0.0;
+
+		const GKS2d_type old_solver = gks2dsolver;
+		gks2dsolver = gks3rd_2d;
+		GKS2D(flux, interface, dt);
+		gks2dsolver = old_solver;
+
+		double local_average[4];
+		for (int m = 0; m < 4; ++m)
+		{
+			local_average[m] = flux.f[m] / dt;
+		}
+		if (x_normal)
+		{
+			Copy4(common_flux, local_average);
+		}
+		else
+		{
+			RotateYLocalToGlobal(common_flux, local_average);
+		}
+	}
+
+	void ComputeInterfaceCommonFluxFromRecon2D(
+		Recon2d& interface,
+		double dt,
+		bool x_normal,
+		double common_flux[4])
+	{
+		BuildCenterTraceFromFaces2D(interface);
+		ComputeInterfaceCommonFluxPreparedCenter2D(interface, dt, x_normal, common_flux);
+	}
+
+	void ComputeInterfaceCommonFlux2D(
+		const GKSFRCell2D& left_cell,
+		const GKSFRCell2D& right_cell,
+		double hx,
+		double hy,
+		double dt,
+		bool x_normal,
+		double tangential_point,
+		double common_flux[4])
+	{
+		Recon2d interface;
+		if (x_normal)
+		{
+			FillXFaceTrace(interface.left, left_cell, hx, hy, true, tangential_point);
+			FillXFaceTrace(interface.right, right_cell, hx, hy, false, tangential_point);
+		}
+		else
+		{
+			FillYFaceTraceLocal(interface.left, left_cell, hx, hy, true, tangential_point);
+			FillYFaceTraceLocal(interface.right, right_cell, hx, hy, false, tangential_point);
+		}
+
+		ComputeInterfaceCommonFluxFromRecon2D(interface, dt, x_normal, common_flux);
+	}
+
+	void ComputeInterfaceCommonFluxFRStencil2D(
+		const GKSFRMesh2D& mesh,
+		int normal_index,
+		int tangential_index,
+		int tangential_point_id,
+		double dt,
+		bool x_normal,
+		double common_flux[4])
+	{
+		Recon2d interface;
+		if (x_normal)
+		{
+			BuildXFaceTraceFR(
+				interface,
+				mesh,
+				normal_index,
+				tangential_index,
+				GKSFR_GL_Point(tangential_point_id));
+		}
+		else
+		{
+			BuildYFaceTraceFRLocal(
+				interface,
+				mesh,
+				tangential_index,
+				normal_index,
+				GKSFR_GL_Point(tangential_point_id));
+		}
+		BuildCenterTraceFromFaces2D(interface);
+		ComputeInterfaceCommonFluxPreparedCenter2D(interface, dt, x_normal, common_flux);
+	}
+
+	void EvaluateInternalFluxPoly2D(
+		double* flux,
+		const double coef[6][4],
+		double xbar,
+		double ybar)
+	{
+		for (int m = 0; m < 4; ++m)
+		{
+			flux[m] = coef[0][m]
+				+ coef[1][m] * xbar
+				+ coef[2][m] * ybar
+				+ 0.5 * coef[3][m] * xbar * xbar
+				+ coef[4][m] * xbar * ybar
+				+ 0.5 * coef[5][m] * ybar * ybar;
+		}
+	}
+
+	int XFaceIndex(const GKSFRMesh2D& mesh, int face_i, int cell_j)
+	{
+		return face_i * mesh.cells_y + cell_j;
+	}
+
+	int YFaceIndex(const GKSFRMesh2D& mesh, int cell_i, int face_j)
+	{
+		return cell_i * (mesh.cells_y + 1) + face_j;
 	}
 }
 
@@ -448,7 +934,12 @@ void GKSFR_ComputeCommonInterfaceFluxes(
 		return;
 	}
 
-	if (boundary == gksfr_transmissive_strict)
+	if (boundary == gksfr_reflective)
+	{
+		ComputeReflectiveBoundaryCommonFlux(
+			mesh.cell[0], mesh.dx, dt, true, face_fluxes[0].F);
+	}
+	else if (boundary == gksfr_transmissive_strict)
 	{
 		ComputeStrictTransmissiveBoundaryCommonFlux(
 			mesh.cell[0], mesh.dx, dt, true, face_fluxes[0].F);
@@ -462,7 +953,12 @@ void GKSFR_ComputeCommonInterfaceFluxes(
 		GKSFR_ComputeInterfaceCommonFlux(
 			mesh.cell[e], mesh.cell[e + 1], mesh.dx, dt, face_fluxes[e + 1].F);
 	}
-	if (boundary == gksfr_transmissive_strict)
+	if (boundary == gksfr_reflective)
+	{
+		ComputeReflectiveBoundaryCommonFlux(
+			mesh.cell[mesh.cells - 1], mesh.dx, dt, false, face_fluxes[mesh.cells].F);
+	}
+	else if (boundary == gksfr_transmissive_strict)
 	{
 		ComputeStrictTransmissiveBoundaryCommonFlux(
 			mesh.cell[mesh.cells - 1], mesh.dx, dt, false, face_fluxes[mesh.cells].F);
@@ -527,4 +1023,376 @@ void GKSFR_AdvanceOneStep(
 	GKSFR_ComputeCommonInterfaceFluxes(mesh, dt, boundary, face_fluxes);
 	GKSFR_ComputeResiduals(mesh, face_fluxes);
 	GKSFR_UpdateSolutionPoints(mesh, dt);
+}
+
+GKSFRCell2D::GKSFRCell2D() : tau(0.0)
+{
+	for (int i = 0; i < 3; ++i)
+	{
+		for (int j = 0; j < 3; ++j)
+		{
+			for (int m = 0; m < 4; ++m)
+			{
+				Q[i][j][m] = 0.0;
+				F_gl[i][j][m] = 0.0;
+				G_gl[i][j][m] = 0.0;
+				residual[i][j][m] = 0.0;
+			}
+		}
+		for (int side = 0; side < 2; ++side)
+		{
+			for (int m = 0; m < 4; ++m)
+			{
+				F_face_local[side][i][m] = 0.0;
+				G_face_local[side][i][m] = 0.0;
+			}
+		}
+	}
+	for (int m = 0; m < 4; ++m)
+	{
+		Qc[m] = 0.0;
+		Qx[m] = 0.0;
+		Qy[m] = 0.0;
+		Qxx[m] = 0.0;
+		Qxy[m] = 0.0;
+		Qyy[m] = 0.0;
+		prim[m] = 0.0;
+		ax[m] = 0.0;
+		ay[m] = 0.0;
+		A[m] = 0.0;
+		bxx[m] = 0.0;
+		bxy[m] = 0.0;
+		byy[m] = 0.0;
+		cx[m] = 0.0;
+		cy[m] = 0.0;
+		d[m] = 0.0;
+	}
+	for (int k = 0; k < 6; ++k)
+	{
+		for (int m = 0; m < 4; ++m)
+		{
+			Fcoef[k][m] = 0.0;
+			Gcoef[k][m] = 0.0;
+		}
+	}
+}
+
+GKSFRMesh2D::GKSFRMesh2D()
+	: cells_x(0), cells_y(0), x_left(0.0), x_right(0.0),
+	y_bottom(0.0), y_top(0.0), dx(0.0), dy(0.0)
+{
+}
+
+void GKSFR_ResizeUniformMesh2D(
+	GKSFRMesh2D& mesh,
+	int cells_x,
+	int cells_y,
+	double x_left,
+	double x_right,
+	double y_bottom,
+	double y_top)
+{
+	mesh.cells_x = cells_x;
+	mesh.cells_y = cells_y;
+	mesh.x_left = x_left;
+	mesh.x_right = x_right;
+	mesh.y_bottom = y_bottom;
+	mesh.y_top = y_top;
+	mesh.dx = (x_right - x_left) / cells_x;
+	mesh.dy = (y_top - y_bottom) / cells_y;
+	mesh.cell.assign(cells_x * cells_y, GKSFRCell2D());
+}
+
+int GKSFR_CellIndex2D(const GKSFRMesh2D& mesh, int i, int j)
+{
+	return i * mesh.cells_y + j;
+}
+
+double GKSFR_CellCenterX2D(const GKSFRMesh2D& mesh, int i)
+{
+	return mesh.x_left + (i + 0.5) * mesh.dx;
+}
+
+double GKSFR_CellCenterY2D(const GKSFRMesh2D& mesh, int j)
+{
+	return mesh.y_bottom + (j + 0.5) * mesh.dy;
+}
+
+double GKSFR_SolutionPointX2D(const GKSFRMesh2D& mesh, int i, int p)
+{
+	return GKSFR_CellCenterX2D(mesh, i) + 0.5 * mesh.dx * GKSFR_GL_Point(p);
+}
+
+double GKSFR_SolutionPointY2D(const GKSFRMesh2D& mesh, int j, int q)
+{
+	return GKSFR_CellCenterY2D(mesh, j) + 0.5 * mesh.dy * GKSFR_GL_Point(q);
+}
+
+void GKSFR_ComputeCellCenterData2D(GKSFRCell2D& cell, double hx, double hy)
+{
+	const double a_gl = kGLNode;
+	const double a2 = a_gl * a_gl;
+	for (int m = 0; m < 4; ++m)
+	{
+		cell.Qc[m] = cell.Q[1][1][m];
+		cell.Qx[m] = (cell.Q[2][1][m] - cell.Q[0][1][m]) / (a_gl * hx);
+		cell.Qy[m] = (cell.Q[1][2][m] - cell.Q[1][0][m]) / (a_gl * hy);
+		cell.Qxx[m] = 4.0 * (cell.Q[0][1][m] - 2.0 * cell.Q[1][1][m] + cell.Q[2][1][m]) / (a2 * hx * hx);
+		cell.Qyy[m] = 4.0 * (cell.Q[1][0][m] - 2.0 * cell.Q[1][1][m] + cell.Q[1][2][m]) / (a2 * hy * hy);
+		cell.Qxy[m] = (cell.Q[2][2][m] - cell.Q[0][2][m] - cell.Q[2][0][m] + cell.Q[0][0][m]) / (a2 * hx * hy);
+	}
+}
+
+void GKSFR_ComputeInternalGKSCoeffs2D(GKSFRCell2D& cell)
+{
+	double center_convar[4];
+	Copy4(center_convar, cell.Qc);
+	Convar_to_ULambda_2d(cell.prim, center_convar);
+	cell.tau = Get_Tau_NS(cell.prim[0], cell.prim[3]);
+
+	SolveCoeffFromMoment2D(cell.ax, cell.Qx, cell.prim);
+	SolveCoeffFromMoment2D(cell.ay, cell.Qy, cell.prim);
+	SolveTimeCoeff2D(cell.A, cell.ax, cell.ay, cell.prim);
+
+	SolveCoeffFromMoment2D(cell.bxx, cell.Qxx, cell.prim);
+	SolveCoeffFromMoment2D(cell.bxy, cell.Qxy, cell.prim);
+	SolveCoeffFromMoment2D(cell.byy, cell.Qyy, cell.prim);
+	SolveTimeCoeff2D(cell.cx, cell.bxx, cell.bxy, cell.prim);
+	SolveTimeCoeff2D(cell.cy, cell.bxy, cell.byy, cell.prim);
+	SolveTimeCoeff2D(cell.d, cell.cx, cell.cy, cell.prim);
+}
+
+void GKSFR_ComputeInternalTimeAveragedFluxAtGLPoints2D(GKSFRCell2D& cell, double hx, double hy, double dt)
+{
+	for (int k = 0; k < 6; ++k)
+	{
+		Zero4(cell.Fcoef[k]);
+		Zero4(cell.Gcoef[k]);
+	}
+
+	for (int i = 0; i < 3; ++i)
+	{
+		for (int j = 0; j < 3; ++j)
+		{
+			const double xbar = 0.5 * hx * GKSFR_GL_Point(i);
+			const double ybar = 0.5 * hy * GKSFR_GL_Point(j);
+			Point2d point_state;
+			EvaluateCellStateAtXY(point_state, cell, hx, hy, xbar, ybar);
+
+			double convar[4];
+			double prim[4];
+			Copy4(convar, point_state.convar);
+			Convar_to_ULambda_2d(prim, convar);
+			const double tau = Get_Tau_NS(prim[0], prim[3]);
+
+			double ax[4], ay[4], Acoef[4];
+			double bxx[4], bxy[4], byy[4];
+			double cx[4], cy[4], dcoef[4];
+			SolveCoeffFromMoment2D(ax, point_state.der1x, prim);
+			SolveCoeffFromMoment2D(ay, point_state.der1y, prim);
+			SolveTimeCoeff2D(Acoef, ax, ay, prim);
+			SolveCoeffFromMoment2D(bxx, point_state.der2xx, prim);
+			SolveCoeffFromMoment2D(bxy, point_state.der2xy, prim);
+			SolveCoeffFromMoment2D(byy, point_state.der2yy, prim);
+			SolveTimeCoeff2D(cx, bxx, bxy, prim);
+			SolveTimeCoeff2D(cy, bxy, byy, prim);
+			SolveTimeCoeff2D(dcoef, cx, cy, prim);
+
+			double unit[4]{ 1.0, 0.0, 0.0, 0.0 };
+			Zero4(cell.F_gl[i][j]);
+			AddMoment2D(cell.F_gl[i][j], 1, 0, unit, prim, 1.0);
+			AddMoment2D(cell.F_gl[i][j], 1, 0, Acoef, prim, 0.5 * dt);
+			AddMoment2D(cell.F_gl[i][j], 1, 0, dcoef, prim, dt * dt / 6.0);
+			AddMoment2D(cell.F_gl[i][j], 2, 0, ax, prim, -tau);
+			AddMoment2D(cell.F_gl[i][j], 1, 1, ay, prim, -tau);
+			AddMoment2D(cell.F_gl[i][j], 1, 0, Acoef, prim, -tau);
+			AddMoment2D(cell.F_gl[i][j], 2, 0, cx, prim, -0.5 * tau * dt);
+			AddMoment2D(cell.F_gl[i][j], 1, 1, cy, prim, -0.5 * tau * dt);
+			AddMoment2D(cell.F_gl[i][j], 1, 0, dcoef, prim, -0.5 * tau * dt);
+
+			Zero4(cell.G_gl[i][j]);
+			AddMoment2D(cell.G_gl[i][j], 0, 1, unit, prim, 1.0);
+			AddMoment2D(cell.G_gl[i][j], 0, 1, Acoef, prim, 0.5 * dt);
+			AddMoment2D(cell.G_gl[i][j], 0, 1, dcoef, prim, dt * dt / 6.0);
+			AddMoment2D(cell.G_gl[i][j], 1, 1, ax, prim, -tau);
+			AddMoment2D(cell.G_gl[i][j], 0, 2, ay, prim, -tau);
+			AddMoment2D(cell.G_gl[i][j], 0, 1, Acoef, prim, -tau);
+			AddMoment2D(cell.G_gl[i][j], 1, 1, cx, prim, -0.5 * tau * dt);
+			AddMoment2D(cell.G_gl[i][j], 0, 2, cy, prim, -0.5 * tau * dt);
+			AddMoment2D(cell.G_gl[i][j], 0, 1, dcoef, prim, -0.5 * tau * dt);
+		}
+	}
+}
+
+void GKSFR_ExtrapolateLocalFluxToFaces2D(GKSFRCell2D& cell)
+{
+	for (int j = 0; j < 3; ++j)
+	{
+		Zero4(cell.F_face_local[0][j]);
+		Zero4(cell.F_face_local[1][j]);
+		for (int p = 0; p < 3; ++p)
+		{
+			const double left_w = LagrangeAt(p, -1.0);
+			const double right_w = LagrangeAt(p, 1.0);
+			AccumulateMoment4(cell.F_face_local[0][j], cell.F_gl[p][j], left_w);
+			AccumulateMoment4(cell.F_face_local[1][j], cell.F_gl[p][j], right_w);
+		}
+	}
+	for (int i = 0; i < 3; ++i)
+	{
+		Zero4(cell.G_face_local[0][i]);
+		Zero4(cell.G_face_local[1][i]);
+		for (int q = 0; q < 3; ++q)
+		{
+			const double bottom_w = LagrangeAt(q, -1.0);
+			const double top_w = LagrangeAt(q, 1.0);
+			AccumulateMoment4(cell.G_face_local[0][i], cell.G_gl[i][q], bottom_w);
+			AccumulateMoment4(cell.G_face_local[1][i], cell.G_gl[i][q], top_w);
+		}
+	}
+}
+
+void GKSFR_PrepareCell2D(GKSFRCell2D& cell, double hx, double hy, double dt)
+{
+	GKSFR_ComputeCellCenterData2D(cell, hx, hy);
+	GKSFR_ComputeInternalGKSCoeffs2D(cell);
+	GKSFR_ComputeInternalTimeAveragedFluxAtGLPoints2D(cell, hx, hy, dt);
+	GKSFR_ExtrapolateLocalFluxToFaces2D(cell);
+}
+
+void GKSFR_PrepareCells2D(GKSFRMesh2D& mesh, double dt)
+{
+	for (int i = 0; i < mesh.cells_x; ++i)
+	{
+		for (int j = 0; j < mesh.cells_y; ++j)
+		{
+			GKSFR_PrepareCell2D(mesh.cell[GKSFR_CellIndex2D(mesh, i, j)], mesh.dx, mesh.dy, dt);
+		}
+	}
+}
+
+void GKSFR_ComputeCommonInterfaceFluxes2D(
+	const GKSFRMesh2D& mesh,
+	double dt,
+	GKSFRBoundary2D boundary,
+	std::vector<GKSFRFaceFlux2D>& x_face_fluxes,
+	std::vector<GKSFRFaceFlux2D>& y_face_fluxes)
+{
+	x_face_fluxes.assign((mesh.cells_x + 1) * mesh.cells_y, GKSFRFaceFlux2D());
+	y_face_fluxes.assign(mesh.cells_x * (mesh.cells_y + 1), GKSFRFaceFlux2D());
+	if (boundary != gksfr2d_periodic || mesh.cells_x <= 0 || mesh.cells_y <= 0)
+	{
+		return;
+	}
+
+	for (int face_i = 0; face_i <= mesh.cells_x; ++face_i)
+	{
+		for (int j = 0; j < mesh.cells_y; ++j)
+		{
+			for (int q = 0; q < 3; ++q)
+			{
+				ComputeInterfaceCommonFluxFRStencil2D(
+					mesh,
+					face_i,
+					j,
+					q,
+					dt,
+					true,
+					x_face_fluxes[XFaceIndex(mesh, face_i, j)].F[q]);
+			}
+		}
+	}
+
+	for (int i = 0; i < mesh.cells_x; ++i)
+	{
+		for (int face_j = 0; face_j <= mesh.cells_y; ++face_j)
+		{
+			for (int p = 0; p < 3; ++p)
+			{
+				ComputeInterfaceCommonFluxFRStencil2D(
+					mesh,
+					face_j,
+					i,
+					p,
+					dt,
+					false,
+					y_face_fluxes[YFaceIndex(mesh, i, face_j)].F[p]);
+			}
+		}
+	}
+}
+
+void GKSFR_ComputeResiduals2D(
+	GKSFRMesh2D& mesh,
+	const std::vector<GKSFRFaceFlux2D>& x_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& y_face_fluxes)
+{
+	for (int e_i = 0; e_i < mesh.cells_x; ++e_i)
+	{
+		for (int e_j = 0; e_j < mesh.cells_y; ++e_j)
+		{
+			GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, e_i, e_j)];
+			for (int i = 0; i < 3; ++i)
+			{
+				const double r = GKSFR_GL_Point(i);
+				for (int j = 0; j < 3; ++j)
+				{
+					const double s = GKSFR_GL_Point(j);
+					for (int m = 0; m < 4; ++m)
+					{
+						double dF_dr = 0.0;
+						double dG_ds = 0.0;
+						for (int p = 0; p < 3; ++p)
+						{
+							for (int q = 0; q < 3; ++q)
+							{
+								dF_dr += cell.F_gl[p][q][m] * LagrangeDerivAt(p, r) * LagrangeAt(q, s);
+								dG_ds += cell.G_gl[p][q][m] * LagrangeAt(p, r) * LagrangeDerivAt(q, s);
+							}
+						}
+						const double* x_left_hat = x_face_fluxes[XFaceIndex(mesh, e_i, e_j)].F[j];
+						const double* x_right_hat = x_face_fluxes[XFaceIndex(mesh, e_i + 1, e_j)].F[j];
+						const double* y_bottom_hat = y_face_fluxes[YFaceIndex(mesh, e_i, e_j)].F[i];
+						const double* y_top_hat = y_face_fluxes[YFaceIndex(mesh, e_i, e_j + 1)].F[i];
+						dF_dr += (x_left_hat[m] - cell.F_face_local[0][j][m]) * RadauLeftDeriv(r);
+						dF_dr += (x_right_hat[m] - cell.F_face_local[1][j][m]) * RadauRightDeriv(r);
+						dG_ds += (y_bottom_hat[m] - cell.G_face_local[0][i][m]) * RadauLeftDeriv(s);
+						dG_ds += (y_top_hat[m] - cell.G_face_local[1][i][m]) * RadauRightDeriv(s);
+
+						cell.residual[i][j][m] = -2.0 / mesh.dx * dF_dr - 2.0 / mesh.dy * dG_ds;
+					}
+				}
+			}
+		}
+	}
+}
+
+void GKSFR_UpdateSolutionPoints2D(GKSFRMesh2D& mesh, double dt)
+{
+	for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
+	{
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				for (int m = 0; m < 4; ++m)
+				{
+					mesh.cell[e].Q[i][j][m] += dt * mesh.cell[e].residual[i][j][m];
+				}
+			}
+		}
+	}
+}
+
+void GKSFR_AdvanceOneStep2D(
+	GKSFRMesh2D& mesh,
+	double dt,
+	GKSFRBoundary2D boundary)
+{
+	std::vector<GKSFRFaceFlux2D> x_face_fluxes;
+	std::vector<GKSFRFaceFlux2D> y_face_fluxes;
+	GKSFR_PrepareCells2D(mesh, dt);
+	GKSFR_ComputeCommonInterfaceFluxes2D(mesh, dt, boundary, x_face_fluxes, y_face_fluxes);
+	GKSFR_ComputeResiduals2D(mesh, x_face_fluxes, y_face_fluxes);
+	GKSFR_UpdateSolutionPoints2D(mesh, dt);
 }

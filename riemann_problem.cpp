@@ -22,6 +22,22 @@ namespace
 
 	void PrimitiveForProblemAtX(double* prim, const RiemannProblem1D& problem, double x)
 	{
+		if (problem.profile_type == RiemannProblem1D::three_constant_states)
+		{
+			if (x < problem.x_discontinuity)
+			{
+				Copy_Array(prim, const_cast<double*>(problem.left_prim), 3);
+				return;
+			}
+			if (x < problem.x_discontinuity_2)
+			{
+				Copy_Array(prim, const_cast<double*>(problem.middle_prim), 3);
+				return;
+			}
+			Copy_Array(prim, const_cast<double*>(problem.right_prim), 3);
+			return;
+		}
+
 		if (x < problem.x_discontinuity)
 		{
 			Copy_Array(prim, const_cast<double*>(problem.left_prim), 3);
@@ -95,6 +111,48 @@ RiemannProblem1D RiemannProblem1D_ShuOsher()
 	problem.profile_type = RiemannProblem1D::shu_osher;
 	problem.right_density_amplitude = 0.2;
 	problem.right_density_wavenumber = 5.0;
+	return problem;
+}
+
+RiemannProblem1D RiemannProblem1D_BlastWave()
+{
+	RiemannProblem1D problem{};
+	problem.x_discontinuity = 0.1;
+	problem.x_discontinuity_2 = 0.9;
+	problem.left_prim[0] = 1.0;
+	problem.left_prim[1] = 0.0;
+	problem.left_prim[2] = 1000.0;
+	problem.middle_prim[0] = 1.0;
+	problem.middle_prim[1] = 0.0;
+	problem.middle_prim[2] = 0.01;
+	problem.right_prim[0] = 1.0;
+	problem.right_prim[1] = 0.0;
+	problem.right_prim[2] = 100.0;
+	problem.profile_type = RiemannProblem1D::three_constant_states;
+	return problem;
+}
+
+RiemannProblem1D RiemannProblem1D_SedovBlastWave(double x_left,double dx)
+{
+	RiemannProblem1D problem{};
+	(void)x_left;
+	const double ambient_energy = 1.0e-12;
+	const double blast_energy = 3.2e6 / dx;
+	const double ambient_pressure = (Gamma - 1.0) * ambient_energy;
+	const double blast_pressure = (Gamma - 1.0) * blast_energy;
+
+	problem.x_discontinuity = -0.5 * dx;
+	problem.x_discontinuity_2 = 0.5 * dx;
+	problem.left_prim[0] = 1.0;
+	problem.left_prim[1] = 0.0;
+	problem.left_prim[2] = ambient_pressure;
+	problem.middle_prim[0] = 1.0;
+	problem.middle_prim[1] = 0.0;
+	problem.middle_prim[2] = blast_pressure;
+	problem.right_prim[0] = 1.0;
+	problem.right_prim[1] = 0.0;
+	problem.right_prim[2] = ambient_pressure;
+	problem.profile_type = RiemannProblem1D::three_constant_states;
 	return problem;
 }
 
