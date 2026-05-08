@@ -211,6 +211,26 @@ namespace
 		return false;
 	}
 
+	bool Has_Invalid_State_1D(Fluid1d* fluids, Block1d block, int& bad_i)
+	{
+		for (int i = block.ghost; i < block.ghost + block.nodex; ++i)
+		{
+			const double density = fluids[i].convar[0];
+			const double pressure = Pressure(
+				fluids[i].convar[0],
+				fluids[i].convar[1],
+				fluids[i].convar[2]);
+			if (!std::isfinite(density) || !std::isfinite(pressure) ||
+				density <= 0.0 || pressure <= 0.0)
+			{
+				bad_i = i;
+				return true;
+			}
+		}
+		bad_i = -1;
+		return false;
+	}
+
 	std::string StepTaggedPath(const std::string& prefix, int final_step, const char* ext)
 	{
 		return "build/result/" + prefix + "_" + std::to_string(final_step) + ext;
@@ -224,14 +244,23 @@ namespace
 		BoundaryCondition leftboundary,
 		BoundaryCondition rightboundary,
 		Fluid1d* bcvalue,
-		double tstop)
+		double tstop,
+		bool show_step,
+		bool& finished)
 	{
 		block.t = 0.0;
 		block.step = 0;
+		finished = true;
 		while (block.t < tstop - 1e-14)
 		{
 			CopyFluid_new_to_old(fluids, block);
 			block.dt = Get_CFL(block, fluids, tstop);
+			if (show_step)
+			{
+				std::cout << "step=" << block.step
+					<< " dt=" << block.dt
+					<< " t=" << block.t << std::endl;
+			}
 			for (int stage = 0; stage < block.stages; ++stage)
 			{
 				leftboundary(fluids, block, bcvalue[0]);
@@ -243,6 +272,27 @@ namespace
 			}
 			block.t += block.dt;
 			block.step++;
+
+			int bad_i = -1;
+			if (Has_Invalid_State_1D(fluids, block, bad_i))
+			{
+				double prim[3];
+				Convar_to_primvar_1D(prim, fluids[bad_i].convar);
+				std::cout << "GKS3rd 1D Riemann failed at step=" << block.step
+					<< " t=" << block.t
+					<< " cell=" << bad_i
+					<< " x=" << fluids[bad_i].cx
+					<< " rho=" << prim[0]
+					<< " u=" << prim[1]
+					<< " p=" << prim[2] << std::endl;
+				finished = false;
+				return;
+			}
+		}
+		if (show_step)
+		{
+			std::cout << "GKS3rd 1D Riemann completed successfully at step="
+				<< block.step << " t=" << block.t << std::endl;
 		}
 	}
 
@@ -383,9 +433,15 @@ void accuracy_sinwave_1d_gks3rd()
 		ICfor_sinwave(fluids, block);
 
 		Fluid1d* bcvalue = new Fluid1d[2];
+		bool finished = true;
 		Advance_1D_Case(
 			fluids, interfaces, fluxes, block,
-			periodic_boundary_left, periodic_boundary_right, bcvalue, 2.0);
+			periodic_boundary_left, periodic_boundary_right, bcvalue, 2.0, false, finished);
+		if (!finished)
+		{
+			std::cout << "GKS3rd 1D accuracy case stopped at mesh="
+				<< mesh_number[imesh] << std::endl;
+		}
 		Compute_Sinwave_Error(fluids, block, error[imesh]);
 		std::string path = "build/result/gks3rd_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".plt";
 		Write_Density_Output_Tecplot(fluids, block, path.c_str());
@@ -506,19 +562,24 @@ void riemann_problem_1d_gks3rd()
 	Configure_GKS3rd_1D(0.1, 1.0);
 
 	Block1d block;
-	Prepare_Block_1D(block, 400, 0.0, 1.0, 0.5);
+	Prepare_Block_1D(block, 400, -5.0, 5.0, 0.05);
 
 	Fluid1d* fluids = new Fluid1d[block.nx];
 	Interface1d* interfaces = new Interface1d[block.nx + 1];
 	Flux1d** fluxes = Setflux_array(block);
 		SetUniformMesh(block, fluids, interfaces, fluxes);
 
-	ICfor1dRM(fluids, RiemannProblem1D_Sod(), block);
+	ICfor1dRM(fluids, RiemannProblem1D_ShuOsher(), block);
 
 	Fluid1d* bcvalue = new Fluid1d[2];
+	bool finished = true;
 	Advance_1D_Case(
 		fluids, interfaces, fluxes, block,
-		free_boundary_left, free_boundary_right, bcvalue, 0.2);
+		free_boundary_left, free_boundary_right, bcvalue, 1.8, true, finished);
+	if (!finished)
+	{
+		std::cout << "GKS3rd 1D Riemann stopped before final time." << std::endl;
+	}
 	Write_Sod_Output(fluids, block, StepTaggedPath("gks3rd", block.step, ".plt").c_str());
 
 	delete[] bcvalue;

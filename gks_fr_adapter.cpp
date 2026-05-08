@@ -86,3 +86,28 @@ void GKSFRAdapterAssembleBlendedHighResiduals(
 		}
 	}
 }
+
+void GKSFRAdapterComputeHighFaceFluxes2D(
+	const GKSFRMesh2D& mesh,
+	double dt,
+	GKSFRBoundary2D boundary,
+	std::vector<GKSFRFaceFlux2D>& x_face_fluxes,
+	std::vector<GKSFRFaceFlux2D>& y_face_fluxes)
+{
+	GKSFRMesh2D work = mesh;
+	GKSFR_PrepareCells2D(work, dt);
+	GKSFR_ComputeCommonInterfaceFluxes2D(work, dt, boundary, x_face_fluxes, y_face_fluxes);
+}
+
+void GKSFRAdapterAdvanceWithFaceFluxes2D(
+	const GKSFRMesh2D& mesh_old,
+	double dt,
+	const std::vector<GKSFRFaceFlux2D>& final_x_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& final_y_face_fluxes,
+	GKSFRMesh2D& mesh_new)
+{
+	mesh_new = mesh_old;
+	GKSFR_PrepareCells2D(mesh_new, dt);
+	GKSFR_ComputeResiduals2D(mesh_new, final_x_face_fluxes, final_y_face_fluxes);
+	GKSFR_UpdateSolutionPoints2D(mesh_new, dt);
+}

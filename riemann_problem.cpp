@@ -20,6 +20,12 @@ namespace
 		Primvar_to_convar_1D(Q, prim);
 	}
 
+	void SetFRPointPrimitive2D(double* Q, const double* prim)
+	{
+		double local_prim[4] = { prim[0], prim[1], prim[2], prim[3] };
+		Primvar_to_convar_2D(Q, local_prim);
+	}
+
 	void PrimitiveForProblemAtX(double* prim, const RiemannProblem1D& problem, double x)
 	{
 		if (problem.profile_type == RiemannProblem1D::three_constant_states)
@@ -156,6 +162,71 @@ RiemannProblem1D RiemannProblem1D_SedovBlastWave(double x_left,double dx)
 	return problem;
 }
 
+RiemannProblem2D RiemannProblem2D_SubcellLimiterReference()
+{
+	RiemannProblem2D problem{};
+	problem.x_discontinuity = 0.5;
+	problem.y_discontinuity = 0.5;
+
+	problem.upper_right_prim[0] = 0.5313;
+	problem.upper_right_prim[1] = 0.0;
+	problem.upper_right_prim[2] = 0.0;
+	problem.upper_right_prim[3] = 0.4;
+
+	problem.upper_left_prim[0] = 1.0;
+	problem.upper_left_prim[1] = 0.7276;
+	problem.upper_left_prim[2] = 0.0;
+	problem.upper_left_prim[3] = 1.0;
+
+	problem.lower_left_prim[0] = 0.8;
+	problem.lower_left_prim[1] = 0.0;
+	problem.lower_left_prim[2] = 0.0;
+	problem.lower_left_prim[3] = 1.0;
+
+	problem.lower_right_prim[0] = 1.0;
+	problem.lower_right_prim[1] = 0.0;
+	problem.lower_right_prim[2] = 0.7276;
+	problem.lower_right_prim[3] = 1.0;
+	return problem;
+}
+
+void ICfor2dRM(GKSFRMesh2D& mesh, const RiemannProblem2D& problem)
+{
+	for (int j = 0; j < mesh.cells_y; ++j)
+	{
+		for (int i = 0; i < mesh.cells_x; ++i)
+		{
+			GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, i, j)];
+			for (int q = 0; q < 3; ++q)
+			{
+				for (int p = 0; p < 3; ++p)
+				{
+					const double x = GKSFR_SolutionPointX2D(mesh, i, p);
+					const double y = GKSFR_SolutionPointY2D(mesh, j, q);
+					const double* prim = nullptr;
+					if (x >= problem.x_discontinuity && y >= problem.y_discontinuity)
+					{
+						prim = problem.upper_right_prim;
+					}
+					else if (x < problem.x_discontinuity && y >= problem.y_discontinuity)
+					{
+						prim = problem.upper_left_prim;
+					}
+					else if (x < problem.x_discontinuity && y < problem.y_discontinuity)
+					{
+						prim = problem.lower_left_prim;
+					}
+					else
+					{
+						prim = problem.lower_right_prim;
+					}
+					SetFRPointPrimitive2D(cell.Q[p][q], prim);
+				}
+			}
+		}
+	}
+}
+
 
 void riemann_problem_1d()
 {
@@ -163,10 +234,10 @@ void riemann_problem_1d()
 	runtime.start_initial = clock();
 
 	Block1d block;
-	block.nodex = 100;
+	block.nodex = 400;
 	block.ghost = 4;
 
-	double tstop = 0.2;
+	double tstop = 1.8;
 	block.CFL = 0.5;
 	Fluid1d* bcvalue = new Fluid1d[2];
 	K = 4;
@@ -187,7 +258,7 @@ void riemann_problem_1d()
 	rightboundary = free_boundary_right;
 	//prepare the reconstruction function
 
-	cellreconstruction = Vanleer;
+	cellreconstruction = WENO5_AO;
 	wenotype = wenoz;
 	reconstruction_variable = characteristic;
 	g0reconstruction = Center_3rd;
@@ -216,8 +287,8 @@ void riemann_problem_1d()
 	//there is no need for buliding the complex topology between cells and interfaces
 	//just using the index for address searching
 
-	block.left = 0.0;
-	block.right = 1.0;
+	block.left = -5.0;
+	block.right = 5.0;
 	block.dx = (block.right - block.left) / block.nodex;
 	//set the uniform geometry information
 	SetUniformMesh(block, fluids, interfaces, fluxes);
@@ -226,7 +297,10 @@ void riemann_problem_1d()
 
 	// then its about initializing, lets first initialize a sod test case
 	//you can initialize whatever kind of 1d test case as you like
-	const RiemannProblem1D problem = RiemannProblem1D_Sod();
+	//const RiemannProblem1D problem = RiemannProblem1D_Sod();
+	//const RiemannProblem1D problem = RiemannProblem1D_DoubleRarefaction();
+	//const RiemannProblem1D problem = RiemannProblem1D_Leblanc();
+	const RiemannProblem1D problem = RiemannProblem1D_ShuOsher();
 	ICfor1dRM(fluids, problem, block);
 	//initializing part end
 

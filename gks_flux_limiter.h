@@ -13,6 +13,16 @@ struct GKSFluxLimiterParam1D
 	GKSFluxLimiterParam1D();
 };
 
+struct GKSFluxLimiterParam2D
+{
+	double rho_floor;
+	double p_floor;
+	double kx;
+	double ky;
+
+	GKSFluxLimiterParam2D();
+};
+
 struct GKSFluxLimiterDiag1D
 {
 	std::vector<double> alpha_face;
@@ -41,6 +51,24 @@ struct GKSFluxLimiterDiag1D
 	std::vector<int> right_safe_p_bad;
 };
 
+struct GKSFluxLimiterDiag2D
+{
+	std::vector<double> alpha_face_x;
+	std::vector<double> alpha_face_y;
+	std::vector<double> theta_rho_x;
+	std::vector<double> theta_rho_y;
+	std::vector<double> theta_p_x;
+	std::vector<double> theta_p_y;
+	std::vector<double> theta_x;
+	std::vector<double> theta_y;
+	int limited_faces_x;
+	int limited_faces_y;
+	double min_theta_x;
+	double min_theta_y;
+
+	GKSFluxLimiterDiag2D();
+};
+
 void GKSFluxLimiterApply1D(
 	const GKSSubcellBranch1D& branch,
 	const std::vector<double>& alpha_cell,
@@ -51,3 +79,17 @@ void GKSFluxLimiterApply1D(
 	const GKSFluxLimiterParam1D& param,
 	std::vector<GKSFRFaceFlux1D>& final_face_fluxes,
 	GKSFluxLimiterDiag1D& diag);
+
+void GKSFluxLimiterApply2D(
+	const GKSSubcellBranch2D& branch,
+	const std::vector<double>& alpha_cell,
+	const std::vector<GKSFRFaceFlux2D>& high_x_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& high_y_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& low_x_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& low_y_face_fluxes,
+	double dt,
+	GKSFRBoundary2D boundary,
+	const GKSFluxLimiterParam2D& param,
+	std::vector<GKSFRFaceFlux2D>& final_x_face_fluxes,
+	std::vector<GKSFRFaceFlux2D>& final_y_face_fluxes,
+	GKSFluxLimiterDiag2D& diag);

@@ -57,3 +57,61 @@ void GKSSubcellBigCellAverageFromLowOrderDofs1D(
 		cell_avg[m] /= (geom.subcell_length_x[0] + geom.subcell_length_x[1] + geom.subcell_length_x[2]);
 	}
 }
+
+void GKSSubcellBuildGeometry2D(GKSSubcellGeom2D& geom, double big_dx, double big_dy)
+{
+	geom.gl_s[0] = -std::sqrt(3.0 / 5.0);
+	geom.gl_s[1] = 0.0;
+	geom.gl_s[2] = std::sqrt(3.0 / 5.0);
+	geom.gl_w[0] = 5.0 / 9.0;
+	geom.gl_w[1] = 8.0 / 9.0;
+	geom.gl_w[2] = 5.0 / 9.0;
+	geom.subcell_face_s[0] = -1.0;
+	geom.subcell_face_s[1] = -4.0 / 9.0;
+	geom.subcell_face_s[2] = 4.0 / 9.0;
+	geom.subcell_face_s[3] = 1.0;
+	for (int i = 0; i < 3; ++i)
+	{
+		geom.subcell_weight[i] = 0.5 * geom.gl_w[i];
+		geom.subcell_length_s[i] = geom.subcell_face_s[i + 1] - geom.subcell_face_s[i];
+		geom.subcell_center_s[i] = 0.5 * (geom.subcell_face_s[i + 1] + geom.subcell_face_s[i]);
+		geom.subcell_length_x[i] = geom.subcell_weight[i] * big_dx;
+		geom.subcell_length_y[i] = geom.subcell_weight[i] * big_dy;
+	}
+}
+
+void GKSSubcellBigCellAverageFromPoints2D(
+	const double point_Q[3][3][4],
+	double cell_avg[4])
+{
+	const double wtilde[3] = { 5.0 / 18.0, 4.0 / 9.0, 5.0 / 18.0 };
+	for (int m = 0; m < 4; ++m)
+	{
+		cell_avg[m] = 0.0;
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				cell_avg[m] += wtilde[i] * wtilde[j] * point_Q[i][j][m];
+			}
+		}
+	}
+}
+
+void GKSSubcellBigCellAverageFromLowOrderDofs2D(
+	const GKSSubcellGeom2D& geom,
+	const double low_dof[3][3][4],
+	double cell_avg[4])
+{
+	for (int m = 0; m < 4; ++m)
+	{
+		cell_avg[m] = 0.0;
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				cell_avg[m] += geom.subcell_weight[i] * geom.subcell_weight[j] * low_dof[i][j][m];
+			}
+		}
+	}
+}

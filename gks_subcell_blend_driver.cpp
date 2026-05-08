@@ -36,6 +36,22 @@ GKSSubcellFrameworkDiag1D::GKSSubcellFrameworkDiag1D()
 {
 }
 
+GKSSubcellFrameworkConfig2D::GKSSubcellFrameworkConfig2D()
+	: blend_mode(gks_subcell2d_hybrid),
+	  low_mode(KFVS1),
+	  use_flux_limiter(true),
+	  use_scaling_limiter(true)
+{
+}
+
+GKSSubcellFrameworkDiag2D::GKSSubcellFrameworkDiag2D()
+	: min_rho(1.0e300),
+	  min_p(1.0e300),
+	  max_alpha(0.0),
+	  troubled_cells(0)
+{
+}
+
 namespace
 {
 	const double kPi = 3.14159265358979323846;
@@ -63,6 +79,23 @@ namespace
 		gks1dsolver = gks3rd;
 	}
 
+	void Configure_GKS_Subcell_2D(double c1, double c2)
+	{
+		K = 3;
+		Gamma = 1.4;
+		R_gas = 1.0;
+		Pr = 0.73;
+		tau_type = Euler;
+		Mu = 0.0;
+		Nu = -1.0;
+		c1_euler = c1;
+		c2_euler = c2;
+		gks2dsolver = gks3rd_2d;
+		reconstruction_variable = conservative;
+		wenotype = linear;
+		is_reduce_order_warning = false;
+	}
+
 	double CellCenterX(const GKSFRMesh1D& mesh, int e)
 	{
 		return mesh.x_left + (e + 0.5) * mesh.dx;
@@ -79,6 +112,12 @@ namespace
 		Primvar_to_convar_1D(Q, prim);
 	}
 
+	void SetPrimitiveAtPoint2D(double* Q, double rho, double u, double v, double p)
+	{
+		double prim[4]{ rho, u, v, p };
+		Primvar_to_convar_2D(Q, prim);
+	}
+
 	void InitializeSinwave(GKSFRMesh1D& mesh)
 	{
 		for (int e = 0; e < mesh.cells; ++e)
@@ -91,6 +130,26 @@ namespace
 		}
 	}
 
+	void InitializeSinwave2D(GKSFRMesh2D& mesh)
+	{
+		for (int i = 0; i < mesh.cells_x; ++i)
+		{
+			for (int j = 0; j < mesh.cells_y; ++j)
+			{
+				GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, i, j)];
+				for (int p = 0; p < 3; ++p)
+				{
+					for (int q = 0; q < 3; ++q)
+					{
+						const double x = GKSFR_SolutionPointX2D(mesh, i, p);
+						const double y = GKSFR_SolutionPointY2D(mesh, j, q);
+						SetPrimitiveAtPoint2D(cell.Q[p][q], 1.0 + 0.2 * std::sin(kPi * (x + y)), 1.0, 1.0, 1.0);
+					}
+				}
+			}
+		}
+	}
+
 	double GetTimeStep(const GKSFRMesh1D& mesh, double CFL, double t, double tstop)
 	{
 		double dt = mesh.dx;
@@ -99,6 +158,34 @@ namespace
 			for (int i = 0; i < 3; ++i)
 			{
 				dt = Dtx(dt, mesh.dx, CFL, const_cast<double*>(mesh.cell[e].Q[i]));
+			}
+		}
+		if (t + dt > tstop)
+		{
+			dt = tstop - t;
+		}
+		return dt;
+	}
+
+	double GetTimeStep2D(const GKSFRMesh2D& mesh, double CFL, double t, double tstop)
+	{
+		double dt = std::min(mesh.dx, mesh.dy);
+		const double h = dt;
+		for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
+		{
+			for (int i = 0; i < 3; ++i)
+			{
+				for (int j = 0; j < 3; ++j)
+				{
+					double prim[4];
+					double convar[4];
+					for (int m = 0; m < 4; ++m)
+					{
+						convar[m] = mesh.cell[e].Q[i][j][m];
+					}
+					Convar_to_primvar_2D(prim, convar);
+					dt = Dtx(dt, h, CFL, prim[0], prim[1], prim[2], prim[3]);
+				}
 			}
 		}
 		if (t + dt > tstop)
@@ -129,6 +216,43 @@ namespace
 		}
 		bad_e = -1;
 		bad_i = -1;
+		return true;
+	}
+
+	double Pressure2DLocal(const double U[4])
+	{
+		if (U[0] <= 0.0)
+		{
+			return -1.0;
+		}
+		return (Gamma - 1.0) *
+			(U[3] - 0.5 * (U[1] * U[1] + U[2] * U[2]) / U[0]);
+	}
+
+	bool CheckPhysicalState2D(const GKSFRMesh2D& mesh, int& bad_e, int& bad_i, int& bad_j)
+	{
+		for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
+		{
+			for (int i = 0; i < 3; ++i)
+			{
+				for (int j = 0; j < 3; ++j)
+				{
+					const double* q = mesh.cell[e].Q[i][j];
+					if (!std::isfinite(q[0]) || !std::isfinite(q[1]) ||
+						!std::isfinite(q[2]) || !std::isfinite(q[3]) ||
+						q[0] <= 0.0 || Pressure2DLocal(q) <= 0.0)
+					{
+						bad_e = e;
+						bad_i = i;
+						bad_j = j;
+						return false;
+					}
+				}
+			}
+		}
+		bad_e = -1;
+		bad_i = -1;
+		bad_j = -1;
 		return true;
 	}
 
@@ -168,6 +292,35 @@ namespace
 		}
 	}
 
+	void WriteCellCenterDensityTecplot2D(const GKSFRMesh2D& mesh, const char* path)
+	{
+		std::ofstream out(path);
+		out << std::setprecision(16);
+		out << "variables = x,y,density,u,v,pressure\n";
+		out << "zone i = " << mesh.cells_x << ", j = " << mesh.cells_y << ", F=POINT\n";
+		for (int j = 0; j < mesh.cells_y; ++j)
+		{
+			for (int i = 0; i < mesh.cells_x; ++i)
+			{
+				GKSFRCell2D cell = mesh.cell[GKSFR_CellIndex2D(mesh, i, j)];
+				GKSFR_ComputeCellCenterData2D(cell, mesh.dx, mesh.dy);
+				double prim[4];
+				double convar[4];
+				for (int m = 0; m < 4; ++m)
+				{
+					convar[m] = cell.Qc[m];
+				}
+				Convar_to_primvar_2D(prim, convar);
+				out << GKSFR_CellCenterX2D(mesh, i) << " "
+					<< GKSFR_CellCenterY2D(mesh, j) << " "
+					<< prim[0] << " "
+					<< prim[1] << " "
+					<< prim[2] << " "
+					<< prim[3] << "\n";
+			}
+		}
+	}
+
 	void PrintBadStateSummary(
 		const GKSFRMesh1D& mesh,
 		int bad_e,
@@ -198,6 +351,38 @@ namespace
 				e2 += diff * diff;
 				einf = std::max(einf, diff);
 				++count;
+			}
+		}
+		error[0] = e1 / count;
+		error[1] = std::sqrt(e2 / count);
+		error[2] = einf;
+	}
+
+	void ComputeSinwaveError2D(const GKSFRMesh2D& mesh, double t, double* error)
+	{
+		double e1 = 0.0;
+		double e2 = 0.0;
+		double einf = 0.0;
+		int count = 0;
+		for (int ei = 0; ei < mesh.cells_x; ++ei)
+		{
+			for (int ej = 0; ej < mesh.cells_y; ++ej)
+			{
+				const GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, ei, ej)];
+				for (int i = 0; i < 3; ++i)
+				{
+					for (int j = 0; j < 3; ++j)
+					{
+						const double x = GKSFR_SolutionPointX2D(mesh, ei, i);
+						const double y = GKSFR_SolutionPointY2D(mesh, ej, j);
+						const double exact = 1.0 + 0.2 * std::sin(kPi * (x + y - 2.0 * t));
+						const double diff = std::fabs(cell.Q[i][j][0] - exact);
+						e1 += diff;
+						e2 += diff * diff;
+						einf = std::max(einf, diff);
+						++count;
+					}
+				}
 			}
 		}
 		error[0] = e1 / count;
@@ -304,6 +489,85 @@ namespace
 		}
 	}
 
+	int XFaceIndex2DLocal(int cells_y, int face_i, int cell_j)
+	{
+		return face_i * cells_y + cell_j;
+	}
+
+	int YFaceIndex2DLocal(int cells_y, int cell_i, int face_j)
+	{
+		return cell_i * (cells_y + 1) + face_j;
+	}
+
+	void MixedFaceFluxWithoutLimiter2D(
+		const GKSFRMesh2D& mesh,
+		const std::vector<double>& alpha_final,
+		const std::vector<GKSFRFaceFlux2D>& high_x_face_fluxes,
+		const std::vector<GKSFRFaceFlux2D>& high_y_face_fluxes,
+		const std::vector<GKSFRFaceFlux2D>& low_x_face_fluxes,
+		const std::vector<GKSFRFaceFlux2D>& low_y_face_fluxes,
+		std::vector<GKSFRFaceFlux2D>& final_x_face_fluxes,
+		std::vector<GKSFRFaceFlux2D>& final_y_face_fluxes,
+		GKSFluxLimiterDiag2D& flux_diag)
+	{
+		final_x_face_fluxes.assign((mesh.cells_x + 1) * mesh.cells_y, GKSFRFaceFlux2D());
+		final_y_face_fluxes.assign(mesh.cells_x * (mesh.cells_y + 1), GKSFRFaceFlux2D());
+		flux_diag = GKSFluxLimiterDiag2D();
+		flux_diag.alpha_face_x.assign(final_x_face_fluxes.size() * 3, 0.0);
+		flux_diag.alpha_face_y.assign(final_y_face_fluxes.size() * 3, 0.0);
+		flux_diag.theta_x.assign(final_x_face_fluxes.size() * 3, 1.0);
+		flux_diag.theta_y.assign(final_y_face_fluxes.size() * 3, 1.0);
+		flux_diag.theta_rho_x.assign(final_x_face_fluxes.size() * 3, 1.0);
+		flux_diag.theta_rho_y.assign(final_y_face_fluxes.size() * 3, 1.0);
+		flux_diag.theta_p_x.assign(final_x_face_fluxes.size() * 3, 1.0);
+		flux_diag.theta_p_y.assign(final_y_face_fluxes.size() * 3, 1.0);
+
+		for (int face_i = 0; face_i <= mesh.cells_x; ++face_i)
+		{
+			const int left_i = (face_i + mesh.cells_x - 1) % mesh.cells_x;
+			const int right_i = face_i % mesh.cells_x;
+			for (int j = 0; j < mesh.cells_y; ++j)
+			{
+				const int left_e = GKSFR_CellIndex2D(mesh, left_i, j);
+				const int right_e = GKSFR_CellIndex2D(mesh, right_i, j);
+				const double alpha_face = 0.5 * (alpha_final[left_e] + alpha_final[right_e]);
+				const int f = XFaceIndex2DLocal(mesh.cells_y, face_i, j);
+				for (int q = 0; q < 3; ++q)
+				{
+					flux_diag.alpha_face_x[f * 3 + q] = alpha_face;
+					for (int m = 0; m < 4; ++m)
+					{
+						final_x_face_fluxes[f].F[q][m] =
+							(1.0 - alpha_face) * high_x_face_fluxes[f].F[q][m]
+							+ alpha_face * low_x_face_fluxes[f].F[q][m];
+					}
+				}
+			}
+		}
+		for (int i = 0; i < mesh.cells_x; ++i)
+		{
+			for (int face_j = 0; face_j <= mesh.cells_y; ++face_j)
+			{
+				const int bottom_j = (face_j + mesh.cells_y - 1) % mesh.cells_y;
+				const int top_j = face_j % mesh.cells_y;
+				const int bottom_e = GKSFR_CellIndex2D(mesh, i, bottom_j);
+				const int top_e = GKSFR_CellIndex2D(mesh, i, top_j);
+				const double alpha_face = 0.5 * (alpha_final[bottom_e] + alpha_final[top_e]);
+				const int f = YFaceIndex2DLocal(mesh.cells_y, i, face_j);
+				for (int p = 0; p < 3; ++p)
+				{
+					flux_diag.alpha_face_y[f * 3 + p] = alpha_face;
+					for (int m = 0; m < 4; ++m)
+					{
+						final_y_face_fluxes[f].F[p][m] =
+							(1.0 - alpha_face) * high_y_face_fluxes[f].F[p][m]
+							+ alpha_face * low_y_face_fluxes[f].F[p][m];
+					}
+				}
+			}
+		}
+	}
+
 	void BuildSafeCellAverage(
 		const GKSSubcellBranch1D& low_branch,
 		std::vector<GKSCellAverage1D>& safe_avg)
@@ -405,8 +669,14 @@ void GKSSubcellAdvanceOneStep1D(
 	GKSSubcellInitializeFromCurrentDofs1D(mesh, low_branch);
 	GKSSubcellComputeInternalFluxes1D(low_branch, dt);
 
+	GKSSubcellBranch1D low_branch_kfvs_safe = low_branch;
+	if (config.low_mode == MUSCL_HANCOCK)
+	{
+		GKSSubcellComputeInternalFluxes1D(low_branch_kfvs_safe, dt, KFVS1);
+	}
+
 	std::vector<GKSFRFaceFlux1D> low_face_fluxes;
-	GKSSubcellComputeLowFaceFluxes1D(low_branch, dt, boundary, low_face_fluxes);
+	GKSSubcellComputeLowFaceFluxes1D(low_branch_kfvs_safe, dt, boundary, low_face_fluxes);
 
 	std::vector<GKSFRFaceFlux1D> final_face_fluxes;
 	if (config.blend_mode == gks_subcell_pure_high)
@@ -430,7 +700,7 @@ void GKSSubcellAdvanceOneStep1D(
 	else if (config.use_flux_limiter)
 	{
 		GKSFluxLimiterApply1D(
-			low_branch,
+			low_branch_kfvs_safe,
 			diag.alpha_final,
 			high_face_fluxes,
 			low_face_fluxes,
@@ -460,13 +730,19 @@ void GKSSubcellAdvanceOneStep1D(
 		high_residual);
 
 	GKSSubcellBranch1D low_branch_safe = low_branch;
+	if (config.low_mode == MUSCL_HANCOCK)
+	{
+		low_branch_safe = low_branch_kfvs_safe;
+	}
 	GKSSubcellComputeElementResiduals1D(low_branch_safe);
 	GKSSubcellAddFaceResiduals1D(low_branch_safe, final_face_fluxes);
 	GKSSubcellUpdateLowOrderDofs1D(low_branch_safe, dt);
 
 	GKSSubcellComputeElementResiduals1D(low_branch);
 	GKSSubcellAddFaceResiduals1D(low_branch, final_face_fluxes);
+	GKSSubcellFallbackBadMUSCLUpdates1D(low_branch, low_branch_safe, dt);
 	GKSSubcellScaleResiduals1D(low_branch, diag.alpha_final);
+	diag.muscl_stats = low_branch.muscl_stats;
 
 	for (int e = 0; e < mesh.cells; ++e)
 	{
@@ -520,6 +796,139 @@ void GKSSubcellAdvanceOneStep1D(
 			}
 		}
 	}
+}
+
+void GKSSubcellAdvanceOneStep2D(
+	GKSFRMesh2D& mesh,
+	double dt,
+	GKSFRBoundary2D boundary,
+	const GKSSubcellFrameworkConfig2D& config,
+	GKSSubcellFrameworkDiag2D& diag)
+{
+	GKSSmoothIndicatorAllCells2D(mesh, config.smooth_param, diag.alpha_raw, diag.alpha_final);
+	if (config.blend_mode == gks_subcell2d_pure_high)
+	{
+		std::fill(diag.alpha_final.begin(), diag.alpha_final.end(), 0.0);
+	}
+	else if (config.blend_mode == gks_subcell2d_pure_low)
+	{
+		std::fill(diag.alpha_final.begin(), diag.alpha_final.end(), 1.0);
+	}
+
+	std::vector<GKSFRFaceFlux2D> high_x_face_fluxes;
+	std::vector<GKSFRFaceFlux2D> high_y_face_fluxes;
+	GKSFRAdapterComputeHighFaceFluxes2D(mesh, dt, boundary, high_x_face_fluxes, high_y_face_fluxes);
+
+	GKSSubcellBranch2D low_branch;
+	GKSSubcellInitializeFromCurrentDofs2D(mesh, low_branch);
+	GKSSubcellComputeInternalFluxes2D(low_branch, dt);
+
+	std::vector<GKSFRFaceFlux2D> low_x_face_fluxes;
+	std::vector<GKSFRFaceFlux2D> low_y_face_fluxes;
+	GKSSubcellComputeLowFaceFluxes2D(low_branch, dt, boundary, low_x_face_fluxes, low_y_face_fluxes);
+
+	std::vector<GKSFRFaceFlux2D> final_x_face_fluxes;
+	std::vector<GKSFRFaceFlux2D> final_y_face_fluxes;
+	if (config.blend_mode == gks_subcell2d_pure_high)
+	{
+		final_x_face_fluxes = high_x_face_fluxes;
+		final_y_face_fluxes = high_y_face_fluxes;
+		diag.flux_diag = GKSFluxLimiterDiag2D();
+	}
+	else if (config.blend_mode == gks_subcell2d_pure_low)
+	{
+		final_x_face_fluxes = low_x_face_fluxes;
+		final_y_face_fluxes = low_y_face_fluxes;
+		diag.flux_diag = GKSFluxLimiterDiag2D();
+	}
+	else if (config.use_flux_limiter)
+	{
+		GKSFluxLimiterApply2D(
+			low_branch,
+			diag.alpha_final,
+			high_x_face_fluxes,
+			high_y_face_fluxes,
+			low_x_face_fluxes,
+			low_y_face_fluxes,
+			dt,
+			boundary,
+			config.flux_param,
+			final_x_face_fluxes,
+			final_y_face_fluxes,
+			diag.flux_diag);
+	}
+	else
+	{
+		MixedFaceFluxWithoutLimiter2D(
+			mesh,
+			diag.alpha_final,
+			high_x_face_fluxes,
+			high_y_face_fluxes,
+			low_x_face_fluxes,
+			low_y_face_fluxes,
+			final_x_face_fluxes,
+			final_y_face_fluxes,
+			diag.flux_diag);
+	}
+
+	GKSFRMesh2D high_new;
+	GKSFRAdapterAdvanceWithFaceFluxes2D(mesh, dt, final_x_face_fluxes, final_y_face_fluxes, high_new);
+
+	GKSSubcellBranch2D low_safe = low_branch;
+	GKSSubcellAdvanceWithFaceFluxes2D(low_safe, final_x_face_fluxes, final_y_face_fluxes, dt);
+
+	GKSFRMesh2D mixed = mesh;
+	diag.max_alpha = 0.0;
+	diag.troubled_cells = 0;
+	for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
+	{
+		const double alpha = diag.alpha_final[e];
+		diag.max_alpha = std::max(diag.max_alpha, alpha);
+		if (alpha > 0.0)
+		{
+			diag.troubled_cells++;
+		}
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				for (int m = 0; m < 4; ++m)
+				{
+					mixed.cell[e].Q[i][j][m] =
+						(1.0 - alpha) * high_new.cell[e].Q[i][j][m]
+						+ alpha * low_safe.cell[e].low_dof_new[i][j][m];
+				}
+			}
+		}
+	}
+
+	if (config.use_scaling_limiter)
+	{
+		GKSScalingLimiterApply2D(mixed, config.scaling_param, diag.scaling_diag);
+	}
+	else
+	{
+		diag.scaling_diag.theta_rho.assign(mesh.cells_x * mesh.cells_y, 1.0);
+		diag.scaling_diag.theta_p.assign(mesh.cells_x * mesh.cells_y, 1.0);
+		diag.scaling_diag.theta.assign(mesh.cells_x * mesh.cells_y, 1.0);
+		diag.scaling_diag.limited_cells = 0;
+	}
+
+	diag.min_rho = 1.0e300;
+	diag.min_p = 1.0e300;
+	for (int e = 0; e < mixed.cells_x * mixed.cells_y; ++e)
+	{
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				const double* q = mixed.cell[e].Q[i][j];
+				diag.min_rho = std::min(diag.min_rho, q[0]);
+				diag.min_p = std::min(diag.min_p, Pressure2DLocal(q));
+			}
+		}
+	}
+	mesh = mixed;
 }
 
 void accuracy_sinwave_1d_gks_subcell()
@@ -579,7 +988,7 @@ void riemann_problem_1d_gks_subcell()
 
 	GKSSubcellFrameworkConfig1D config;
 	config.blend_mode = gks_subcell_hybrid;
-	config.low_mode = KFVS1;
+	config.low_mode = MUSCL_HANCOCK;
 	config.use_flux_limiter = true;
 	config.use_scaling_limiter = true;
 
@@ -602,4 +1011,122 @@ void riemann_problem_1d_gks_subcell()
 	}
 
 	WriteSodTecplot(mesh, StepTaggedPath("gks_subcell", final_step, ".plt").c_str());
+}
+
+void accuracy_sinwave_2d_gks_subcell()
+{
+	Ensure_Result_Directory();
+	Configure_GKS_Subcell_2D(0.0, 0.0);
+	GKSSubcellFrameworkConfig2D config;
+	config.blend_mode = gks_subcell2d_hybrid;
+	config.use_flux_limiter = true;
+	config.use_scaling_limiter = true;
+
+	const double CFL = 0.05;
+	const double tstop = 0.1;
+	const int mesh_set = 3;
+	const int mesh_number[mesh_set] = { 20, 40, 80 };
+	double error[mesh_set][3]{};
+	GKSSubcellFrameworkDiag2D last_diag;
+
+	for (int imesh = 0; imesh < mesh_set; ++imesh)
+	{
+		GKSFRMesh2D mesh;
+		GKSFR_ResizeUniformMesh2D(mesh, mesh_number[imesh], mesh_number[imesh], 0.0, 2.0, 0.0, 2.0);
+		InitializeSinwave2D(mesh);
+		double t = 0.0;
+		int step = 0;
+		while (t < tstop - 1.0e-14)
+		{
+			const double dt = GetTimeStep2D(mesh, CFL, t, tstop);
+			GKSSubcellAdvanceOneStep2D(mesh, dt, gksfr2d_periodic, config, last_diag);
+			t += dt;
+			++step;
+			int bad_e = -1, bad_i = -1, bad_j = -1;
+			if (!CheckPhysicalState2D(mesh, bad_e, bad_i, bad_j))
+			{
+				std::cout << "GKS-subcell 2D sinwave failed at mesh=" << mesh_number[imesh]
+					<< " step=" << step
+					<< " cell=" << bad_e
+					<< " point=(" << bad_i << "," << bad_j << ")" << std::endl;
+				return;
+			}
+		}
+		ComputeSinwaveError2D(mesh, tstop, error[imesh]);
+		WriteCellCenterDensityTecplot2D(
+			mesh,
+			("build/result/gks_subcell_2d_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".plt").c_str());
+		std::cout << "smooth limiter stats mesh=" << mesh_number[imesh]
+			<< " max alpha=" << last_diag.max_alpha
+			<< " troubled cells=" << last_diag.troubled_cells
+			<< " flux-limited x/y=" << last_diag.flux_diag.limited_faces_x << "/" << last_diag.flux_diag.limited_faces_y
+			<< " scaling cells=" << last_diag.scaling_diag.limited_cells << std::endl;
+	}
+
+	std::cout << "GKS-subcell 2D sinwave errors" << std::endl;
+	for (int i = 0; i < mesh_set; ++i)
+	{
+		std::cout << "mesh=" << mesh_number[i]
+			<< " L1=" << error[i][0]
+			<< " L2=" << error[i][1]
+			<< " Linf=" << error[i][2];
+		if (i > 0)
+		{
+			std::cout << " order(L1)=" << std::log(error[i - 1][0] / error[i][0]) / std::log(2.0)
+				<< " order(L2)=" << std::log(error[i - 1][1] / error[i][1]) / std::log(2.0)
+				<< " order(Linf)=" << std::log(error[i - 1][2] / error[i][2]) / std::log(2.0);
+		}
+		std::cout << std::endl;
+	}
+}
+
+void riemann_problem_2d_gks_subcell()
+{
+	Ensure_Result_Directory();
+	Configure_GKS_Subcell_2D(0.1, 1.0);
+	GKSSubcellFrameworkConfig2D config;
+	config.blend_mode = gks_subcell2d_hybrid;
+	config.use_flux_limiter = true;
+	config.use_scaling_limiter = true;
+	config.flux_param.kx = 0.5;
+	config.flux_param.ky = 0.5;
+
+	GKSFRMesh2D mesh;
+	GKSFR_ResizeUniformMesh2D(mesh, 256, 256, 0.0, 1.0, 0.0, 1.0);
+	ICfor2dRM(mesh, RiemannProblem2D_SubcellLimiterReference());
+
+	const double CFL = 0.02;
+	const double tstop = 0.25;
+	double t = 0.0;
+	int step = 0;
+	GKSSubcellFrameworkDiag2D diag;
+	while (t < tstop - 1.0e-14)
+	{
+		const double dt = GetTimeStep2D(mesh, CFL, t, tstop);
+		std::cout << "step=" << step << " dt=" << dt << " t=" << t << std::endl;
+		GKSSubcellAdvanceOneStep2D(mesh, dt, gksfr2d_periodic, config, diag);
+		t += dt;
+		++step;
+
+		int bad_e = -1, bad_i = -1, bad_j = -1;
+		if (!CheckPhysicalState2D(mesh, bad_e, bad_i, bad_j))
+		{
+			std::cout << "GKS-subcell 2D Riemann failed at step=" << step
+				<< " cell=" << bad_e
+				<< " point=(" << bad_i << "," << bad_j << ")" << std::endl;
+			break;
+		}
+	}
+
+	std::cout << "GKS-subcell 2D Riemann limiter statistics" << std::endl;
+	std::cout << "min rho=" << diag.min_rho << std::endl;
+	std::cout << "min p=" << diag.min_p << std::endl;
+	std::cout << "max alpha=" << diag.max_alpha << std::endl;
+	std::cout << "number of troubled cells alpha > 0=" << diag.troubled_cells << std::endl;
+	std::cout << "number of flux-limited faces x/y="
+		<< diag.flux_diag.limited_faces_x << "/" << diag.flux_diag.limited_faces_y << std::endl;
+	std::cout << "min theta_F=" << diag.flux_diag.min_theta_x << std::endl;
+	std::cout << "min theta_G=" << diag.flux_diag.min_theta_y << std::endl;
+	std::cout << "number of scaling-limited cells=" << diag.scaling_diag.limited_cells << std::endl;
+	WriteCellCenterDensityTecplot2D(mesh, StepTaggedPath("gks_subcell_2d_riemann", step, ".plt").c_str());
 }

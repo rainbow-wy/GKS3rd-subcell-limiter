@@ -46,15 +46,16 @@ int main()
 	//accuracy_sinwave_1d_gksfr();//一维FR-单步3阶GKS精度测试
 	//accuracy_sinwave_1d_gks_subcell();//一维子单元限制器精度测试
 	//riemann_problem_1d_gksfr();//一维FR-单步3阶GKS黎曼问题测试（由于未做子单元限制器，产生振荡基本跑不通）
-	//riemann_problem_1d_gks_subcell();//一维子单元限制器单步3阶GKS黎曼问题测试
-	//riemann_problem_1d_gks3rd();
+	riemann_problem_1d_gks_subcell();//一维子单元限制器单步3阶GKS黎曼问题测试
+	//riemann_problem_1d_gks3rd();//一维FV-单步3阶GKS黎曼问题测试
 	//riemann_problem_1d();  //一维黎曼问题测试，测试格式对于可压缩间断问题的鲁棒性和分辨率
 
 	//accuracy_sinwave_2d_gks3rd();//二维FV-单步3阶GKS精度测试
-	accuracy_sinwave_2d_gksfr();//二维FR-单步3阶GKS光滑精度测试
+	//accuracy_sinwave_2d_gksfr();//二维FR-单步3阶GKS光滑精度测试
 	//riemann_problem_2d_gks3rd();//二维FV-单步3阶GKS黎曼问题测试riemann
     //accuracy_sinwave_2d(); //二维精度测试，通过二维周期线性的正弦波传播算例，测试格式在光滑（smooth flow）无粘工况下的精度
 	//riemann_problem_2d();  //二维黎曼问题测试，测试格式对于多维可压缩间断问题的鲁棒性和分辨率
+	//riemann_problem_2d_gks_subcell();//二维子单元限制器黎曼问题测试
 	//boundary_layer();      //二维边界层问题测试，测试格式对于光滑（smooth flow）粘性边界的分辨率，非均匀直角网格
 	//cylinder();              //二维超音速圆柱绕流问题测试，测试格式对于间断问题和非均匀网格的鲁棒性
 	//riemann_problem_subcell_1d();// 子单元GKS1D求解器

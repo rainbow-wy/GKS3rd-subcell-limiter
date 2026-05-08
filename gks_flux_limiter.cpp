@@ -12,6 +12,22 @@ GKSFluxLimiterParam1D::GKSFluxLimiterParam1D()
 {
 }
 
+GKSFluxLimiterParam2D::GKSFluxLimiterParam2D()
+	: rho_floor(1.0e-12),
+	  p_floor(1.0e-12),
+	  kx(0.5),
+	  ky(0.5)
+{
+}
+
+GKSFluxLimiterDiag2D::GKSFluxLimiterDiag2D()
+	: limited_faces_x(0),
+	  limited_faces_y(0),
+	  min_theta_x(1.0),
+	  min_theta_y(1.0)
+{
+}
+
 namespace
 {
 	void ConservativeToDiagnostic(const double U[3], double& rho, double& u, double& p)
@@ -72,6 +88,28 @@ namespace
 	double PressureFromConservative(const double U[3])
 	{
 		return Pressure(U[0], U[1], U[2]);
+	}
+
+	bool StateFinite2D(const double U[4])
+	{
+		return std::isfinite(U[0]) && std::isfinite(U[1]) &&
+			std::isfinite(U[2]) && std::isfinite(U[3]);
+	}
+
+	double Pressure2DFromConservative(const double U[4])
+	{
+		if (U[0] <= 0.0)
+		{
+			return -std::numeric_limits<double>::infinity();
+		}
+		return (Gamma - 1.0) *
+			(U[3] - 0.5 * (U[1] * U[1] + U[2] * U[2]) / U[0]);
+	}
+
+	bool StateAdmissible2D(const double U[4], double rho_floor, double p_floor)
+	{
+		return StateFinite2D(U) && U[0] > rho_floor &&
+			Pressure2DFromConservative(U) > p_floor;
 	}
 
 	double PressureTheta(const double U_safe[3], const double U_candidate[3], double p_floor)
@@ -137,6 +175,155 @@ namespace
 			return 0.0;
 		}
 		return std::max(0.0, std::min(1.0, theta));
+	}
+
+	double PressureTheta2D(const double U_safe[4], const double U_candidate[4], double p_floor)
+	{
+		if (!StateFinite2D(U_safe) || !StateFinite2D(U_candidate))
+		{
+			return 0.0;
+		}
+		if (U_safe[0] <= 0.0 || Pressure2DFromConservative(U_safe) <= p_floor)
+		{
+			return 0.0;
+		}
+		if (Pressure2DFromConservative(U_candidate) >= p_floor)
+		{
+			return 1.0;
+		}
+		const double eta_p = p_floor / (Gamma - 1.0);
+		const double dr = U_candidate[0] - U_safe[0];
+		const double dmx = U_candidate[1] - U_safe[1];
+		const double dmy = U_candidate[2] - U_safe[2];
+		const double dE = U_candidate[3] - U_safe[3];
+		const double A = 2.0 * dr * dE - dmx * dmx - dmy * dmy;
+		const double B = 2.0 * U_safe[0] * dE
+			+ 2.0 * dr * (U_safe[3] - eta_p)
+			- 2.0 * U_safe[1] * dmx
+			- 2.0 * U_safe[2] * dmy;
+		const double C = 2.0 * U_safe[0] * (U_safe[3] - eta_p)
+			- U_safe[1] * U_safe[1]
+			- U_safe[2] * U_safe[2];
+
+		if (std::fabs(A) < 1.0e-14)
+		{
+			if (std::fabs(B) < 1.0e-14)
+			{
+				return 0.0;
+			}
+			return std::max(0.0, std::min(1.0, -C / B));
+		}
+		double disc = B * B - 4.0 * A * C;
+		if (disc < 0.0)
+		{
+			disc = 0.0;
+		}
+		const double sqrt_disc = std::sqrt(disc);
+		const double r1 = (-B - sqrt_disc) / (2.0 * A);
+		const double r2 = (-B + sqrt_disc) / (2.0 * A);
+		double theta = 0.0;
+		bool found = false;
+		if (r1 >= 0.0 && r1 <= 1.0)
+		{
+			theta = r1;
+			found = true;
+		}
+		if (r2 >= 0.0 && r2 <= 1.0)
+		{
+			theta = found ? std::min(theta, r2) : r2;
+			found = true;
+		}
+		return found ? std::max(0.0, std::min(1.0, theta)) : 0.0;
+	}
+
+	void BlendFlux4(const double high[4], const double low[4], double alpha, double out[4])
+	{
+		for (int m = 0; m < 4; ++m)
+		{
+			out[m] = (1.0 - alpha) * high[m] + alpha * low[m];
+		}
+	}
+
+	int XFaceIndex2D(int cells_y, int face_i, int cell_j)
+	{
+		return face_i * cells_y + cell_j;
+	}
+
+	int YFaceIndex2D(int cells_y, int cell_i, int face_j)
+	{
+		return cell_i * (cells_y + 1) + face_j;
+	}
+
+	void UpdateXLeftState2D(
+		const GKSSubcellBranch2D& branch,
+		int e_left,
+		int q,
+		const double face_flux[4],
+		double dt,
+		double kx,
+		double U_out[4])
+	{
+		const GKSSubcellCell2D& cell = branch.cell[e_left];
+		const double dx = branch.geom.subcell_length_x[2];
+		for (int m = 0; m < 4; ++m)
+		{
+			U_out[m] = cell.low_dof[2][q][m]
+				- dt / (kx * dx) * (face_flux[m] - cell.internal_flux_x[1][q][m]);
+		}
+	}
+
+	void UpdateXRightState2D(
+		const GKSSubcellBranch2D& branch,
+		int e_right,
+		int q,
+		const double face_flux[4],
+		double dt,
+		double kx,
+		double U_out[4])
+	{
+		const GKSSubcellCell2D& cell = branch.cell[e_right];
+		const double dx = branch.geom.subcell_length_x[0];
+		for (int m = 0; m < 4; ++m)
+		{
+			U_out[m] = cell.low_dof[0][q][m]
+				- dt / (kx * dx) * (cell.internal_flux_x[0][q][m] - face_flux[m]);
+		}
+	}
+
+	void UpdateYBottomState2D(
+		const GKSSubcellBranch2D& branch,
+		int e_bottom,
+		int p,
+		const double face_flux[4],
+		double dt,
+		double ky,
+		double U_out[4])
+	{
+		const GKSSubcellCell2D& cell = branch.cell[e_bottom];
+		const double dy = branch.geom.subcell_length_y[2];
+		for (int m = 0; m < 4; ++m)
+		{
+			U_out[m] = cell.low_dof[p][2][m]
+				- dt / (ky * dy) * (face_flux[m] - cell.internal_flux_y[p][1][m]);
+		}
+	}
+
+	void UpdateYTopState2D(
+		const GKSSubcellBranch2D& branch,
+		int e_top,
+		int p,
+		const double face_flux[4],
+		double dt,
+		double ky,
+		double U_out[4])
+	{
+		const GKSSubcellCell2D& cell = branch.cell[e_top];
+		const double dy = branch.geom.subcell_length_y[0];
+		for (int m = 0; m < 4; ++m)
+		{
+			U_out[m] = cell.low_dof[p][0][m]
+				- dt / (ky * dy) * (cell.internal_flux_y[p][0][m] - face_flux[m]);
+		}
 	}
 
 	void BlendFlux(
@@ -408,5 +595,211 @@ void GKSFluxLimiterApply1D(
 	diag.left_safe_p_bad[cells] = diag.left_safe_p_bad[0];
 	diag.right_safe_rho_bad[cells] = diag.right_safe_rho_bad[0];
 	diag.right_safe_p_bad[cells] = diag.right_safe_p_bad[0];
+	}
+}
+
+void GKSFluxLimiterApply2D(
+	const GKSSubcellBranch2D& branch,
+	const std::vector<double>& alpha_cell,
+	const std::vector<GKSFRFaceFlux2D>& high_x_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& high_y_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& low_x_face_fluxes,
+	const std::vector<GKSFRFaceFlux2D>& low_y_face_fluxes,
+	double dt,
+	GKSFRBoundary2D boundary,
+	const GKSFluxLimiterParam2D& param,
+	std::vector<GKSFRFaceFlux2D>& final_x_face_fluxes,
+	std::vector<GKSFRFaceFlux2D>& final_y_face_fluxes,
+	GKSFluxLimiterDiag2D& diag)
+{
+	const int nx = branch.cells_x;
+	const int ny = branch.cells_y;
+	final_x_face_fluxes.assign((nx + 1) * ny, GKSFRFaceFlux2D());
+	final_y_face_fluxes.assign(nx * (ny + 1), GKSFRFaceFlux2D());
+	const int x_count = (nx + 1) * ny * 3;
+	const int y_count = nx * (ny + 1) * 3;
+	diag.alpha_face_x.assign(x_count, 0.0);
+	diag.alpha_face_y.assign(y_count, 0.0);
+	diag.theta_rho_x.assign(x_count, 1.0);
+	diag.theta_rho_y.assign(y_count, 1.0);
+	diag.theta_p_x.assign(x_count, 1.0);
+	diag.theta_p_y.assign(y_count, 1.0);
+	diag.theta_x.assign(x_count, 1.0);
+	diag.theta_y.assign(y_count, 1.0);
+	diag.limited_faces_x = 0;
+	diag.limited_faces_y = 0;
+	diag.min_theta_x = 1.0;
+	diag.min_theta_y = 1.0;
+	if (boundary != gksfr2d_periodic)
+	{
+		return;
+	}
+	const double kx = std::max(1.0e-12, param.kx);
+	const double ky = std::max(1.0e-12, param.ky);
+
+	for (int face_i = 0; face_i <= nx; ++face_i)
+	{
+		const int left_i = (face_i + nx - 1) % nx;
+		const int right_i = face_i % nx;
+		for (int j = 0; j < ny; ++j)
+		{
+			const int e_left = GKSSubcellCellIndex2D(branch, left_i, j);
+			const int e_right = GKSSubcellCellIndex2D(branch, right_i, j);
+			const double alpha_face = 0.5 * (alpha_cell[e_left] + alpha_cell[e_right]);
+			const int face_index = XFaceIndex2D(ny, face_i, j);
+			for (int q = 0; q < 3; ++q)
+			{
+				const int diag_index = (face_index * 3 + q);
+				diag.alpha_face_x[diag_index] = alpha_face;
+				double F_ig[4];
+				BlendFlux4(high_x_face_fluxes[face_index].F[q], low_x_face_fluxes[face_index].F[q], alpha_face, F_ig);
+
+				double UL_safe[4], UR_safe[4], UL_ig[4], UR_ig[4];
+				UpdateXLeftState2D(branch, e_left, q, low_x_face_fluxes[face_index].F[q], dt, kx, UL_safe);
+				UpdateXRightState2D(branch, e_right, q, low_x_face_fluxes[face_index].F[q], dt, kx, UR_safe);
+				UpdateXLeftState2D(branch, e_left, q, F_ig, dt, kx, UL_ig);
+				UpdateXRightState2D(branch, e_right, q, F_ig, dt, kx, UR_ig);
+				if (!StateAdmissible2D(UL_safe, param.rho_floor, param.p_floor) ||
+					!StateAdmissible2D(UR_safe, param.rho_floor, param.p_floor))
+				{
+					for (int m = 0; m < 4; ++m)
+					{
+						final_x_face_fluxes[face_index].F[q][m] = low_x_face_fluxes[face_index].F[q][m];
+					}
+					diag.theta_x[diag_index] = 0.0;
+					diag.theta_rho_x[diag_index] = 0.0;
+					diag.theta_p_x[diag_index] = 0.0;
+					diag.limited_faces_x++;
+					diag.min_theta_x = 0.0;
+					continue;
+				}
+				if (StateAdmissible2D(UL_ig, param.rho_floor, param.p_floor) &&
+					StateAdmissible2D(UR_ig, param.rho_floor, param.p_floor))
+				{
+					for (int m = 0; m < 4; ++m)
+					{
+						final_x_face_fluxes[face_index].F[q][m] = F_ig[m];
+					}
+					continue;
+				}
+				const double theta_rho = std::min(
+					1.0,
+					std::min(
+						DensityTheta(UL_safe[0], UL_ig[0], param.rho_floor),
+						DensityTheta(UR_safe[0], UR_ig[0], param.rho_floor)));
+				diag.theta_rho_x[diag_index] = theta_rho;
+				double F_rho[4];
+				for (int m = 0; m < 4; ++m)
+				{
+					F_rho[m] = low_x_face_fluxes[face_index].F[q][m]
+						+ theta_rho * (F_ig[m] - low_x_face_fluxes[face_index].F[q][m]);
+				}
+				double UL_rho[4], UR_rho[4];
+				UpdateXLeftState2D(branch, e_left, q, F_rho, dt, kx, UL_rho);
+				UpdateXRightState2D(branch, e_right, q, F_rho, dt, kx, UR_rho);
+				const double theta_p = std::min(
+					1.0,
+					std::min(
+						PressureTheta2D(UL_safe, UL_rho, param.p_floor),
+						PressureTheta2D(UR_safe, UR_rho, param.p_floor)));
+				diag.theta_p_x[diag_index] = theta_p;
+				const double theta = theta_rho * theta_p;
+				diag.theta_x[diag_index] = theta;
+				diag.min_theta_x = std::min(diag.min_theta_x, theta);
+				if (theta < 1.0 - 1.0e-12)
+				{
+					diag.limited_faces_x++;
+				}
+				for (int m = 0; m < 4; ++m)
+				{
+					final_x_face_fluxes[face_index].F[q][m] =
+						low_x_face_fluxes[face_index].F[q][m]
+						+ theta * (F_ig[m] - low_x_face_fluxes[face_index].F[q][m]);
+				}
+			}
+		}
+	}
+
+	for (int i = 0; i < nx; ++i)
+	{
+		for (int face_j = 0; face_j <= ny; ++face_j)
+		{
+			const int bottom_j = (face_j + ny - 1) % ny;
+			const int top_j = face_j % ny;
+			const int e_bottom = GKSSubcellCellIndex2D(branch, i, bottom_j);
+			const int e_top = GKSSubcellCellIndex2D(branch, i, top_j);
+			const double alpha_face = 0.5 * (alpha_cell[e_bottom] + alpha_cell[e_top]);
+			const int face_index = YFaceIndex2D(ny, i, face_j);
+			for (int p = 0; p < 3; ++p)
+			{
+				const int diag_index = face_index * 3 + p;
+				diag.alpha_face_y[diag_index] = alpha_face;
+				double G_ig[4];
+				BlendFlux4(high_y_face_fluxes[face_index].F[p], low_y_face_fluxes[face_index].F[p], alpha_face, G_ig);
+
+				double UB_safe[4], UT_safe[4], UB_ig[4], UT_ig[4];
+				UpdateYBottomState2D(branch, e_bottom, p, low_y_face_fluxes[face_index].F[p], dt, ky, UB_safe);
+				UpdateYTopState2D(branch, e_top, p, low_y_face_fluxes[face_index].F[p], dt, ky, UT_safe);
+				UpdateYBottomState2D(branch, e_bottom, p, G_ig, dt, ky, UB_ig);
+				UpdateYTopState2D(branch, e_top, p, G_ig, dt, ky, UT_ig);
+				if (!StateAdmissible2D(UB_safe, param.rho_floor, param.p_floor) ||
+					!StateAdmissible2D(UT_safe, param.rho_floor, param.p_floor))
+				{
+					for (int m = 0; m < 4; ++m)
+					{
+						final_y_face_fluxes[face_index].F[p][m] = low_y_face_fluxes[face_index].F[p][m];
+					}
+					diag.theta_y[diag_index] = 0.0;
+					diag.theta_rho_y[diag_index] = 0.0;
+					diag.theta_p_y[diag_index] = 0.0;
+					diag.limited_faces_y++;
+					diag.min_theta_y = 0.0;
+					continue;
+				}
+				if (StateAdmissible2D(UB_ig, param.rho_floor, param.p_floor) &&
+					StateAdmissible2D(UT_ig, param.rho_floor, param.p_floor))
+				{
+					for (int m = 0; m < 4; ++m)
+					{
+						final_y_face_fluxes[face_index].F[p][m] = G_ig[m];
+					}
+					continue;
+				}
+				const double theta_rho = std::min(
+					1.0,
+					std::min(
+						DensityTheta(UB_safe[0], UB_ig[0], param.rho_floor),
+						DensityTheta(UT_safe[0], UT_ig[0], param.rho_floor)));
+				diag.theta_rho_y[diag_index] = theta_rho;
+				double G_rho[4];
+				for (int m = 0; m < 4; ++m)
+				{
+					G_rho[m] = low_y_face_fluxes[face_index].F[p][m]
+						+ theta_rho * (G_ig[m] - low_y_face_fluxes[face_index].F[p][m]);
+				}
+				double UB_rho[4], UT_rho[4];
+				UpdateYBottomState2D(branch, e_bottom, p, G_rho, dt, ky, UB_rho);
+				UpdateYTopState2D(branch, e_top, p, G_rho, dt, ky, UT_rho);
+				const double theta_p = std::min(
+					1.0,
+					std::min(
+						PressureTheta2D(UB_safe, UB_rho, param.p_floor),
+						PressureTheta2D(UT_safe, UT_rho, param.p_floor)));
+				diag.theta_p_y[diag_index] = theta_p;
+				const double theta = theta_rho * theta_p;
+				diag.theta_y[diag_index] = theta;
+				diag.min_theta_y = std::min(diag.min_theta_y, theta);
+				if (theta < 1.0 - 1.0e-12)
+				{
+					diag.limited_faces_y++;
+				}
+				for (int m = 0; m < 4; ++m)
+				{
+					final_y_face_fluxes[face_index].F[p][m] =
+						low_y_face_fluxes[face_index].F[p][m]
+						+ theta * (G_ig[m] - low_y_face_fluxes[face_index].F[p][m]);
+				}
+			}
+		}
 	}
 }

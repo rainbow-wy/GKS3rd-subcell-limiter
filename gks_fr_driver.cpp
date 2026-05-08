@@ -532,9 +532,9 @@ void accuracy_sinwave_2d_gksfr()
 
 	const double CFL = 0.05;
 	const double tstop = 0.1;
-	const int mesh_set = 4;
-	const int mesh_number[mesh_set] = { 20, 40, 80, 160};
-	double error[mesh_set][4]{};
+	const int mesh_set = 5;
+	const int mesh_number[mesh_set] = { 20, 40, 80, 160, 320};
+	double error[mesh_set][5]{};
 
 	for (int imesh = 0; imesh < mesh_set; ++imesh)
 	{
