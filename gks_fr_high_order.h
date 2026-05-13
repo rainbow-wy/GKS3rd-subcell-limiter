@@ -104,7 +104,18 @@ void GKSFR_AdvanceOneStep(
 
 enum GKSFRBoundary2D
 {
-	gksfr2d_periodic
+	gksfr2d_periodic,
+	gksfr2d_transmissive,
+	gksfr2d_reflective,
+	gksfr2d_double_mach
+};
+
+enum GKSFRBoundarySide2D
+{
+	gksfr2d_left_side,
+	gksfr2d_right_side,
+	gksfr2d_bottom_side,
+	gksfr2d_top_side
 };
 
 struct GKSFRFaceFlux2D
@@ -186,6 +197,18 @@ double GKSFR_CellCenterX2D(const GKSFRMesh2D& mesh, int i);
 double GKSFR_CellCenterY2D(const GKSFRMesh2D& mesh, int j);
 double GKSFR_SolutionPointX2D(const GKSFRMesh2D& mesh, int i, int p);
 double GKSFR_SolutionPointY2D(const GKSFRMesh2D& mesh, int j, int q);
+
+void GKSFR_SetBoundaryTime2D(double t);
+double GKSFR_GetBoundaryTime2D();
+void GKSFR_DoubleMachPrimitive2D(double prim[4], double x, double y, double t);
+void GKSFR_BoundaryGhostState2D(
+	double ghost_Q[4],
+	const double inner_Q[4],
+	GKSFRBoundary2D boundary,
+	GKSFRBoundarySide2D side,
+	double x,
+	double y,
+	double t);
 
 void GKSFR_ComputeCellCenterData2D(GKSFRCell2D& cell, double hx, double hy);
 void GKSFR_ComputeInternalGKSCoeffs2D(GKSFRCell2D& cell);

@@ -39,6 +39,7 @@ RiemannProblem1D RiemannProblem1D_ShuOsher();
 RiemannProblem1D RiemannProblem1D_BlastWave();
 RiemannProblem1D RiemannProblem1D_SedovBlastWave(double x_left, double dx);
 RiemannProblem2D RiemannProblem2D_SubcellLimiterReference();
+void ICforDoubleMachReflection2D(GKSFRMesh2D& mesh);
 
 void riemann_problem_1d();
 void ICfor1dRM(Fluid1d* fluids, Fluid1d zone1, Fluid1d zone2, Block1d block);

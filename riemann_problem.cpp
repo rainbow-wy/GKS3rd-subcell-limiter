@@ -227,6 +227,28 @@ void ICfor2dRM(GKSFRMesh2D& mesh, const RiemannProblem2D& problem)
 	}
 }
 
+void ICforDoubleMachReflection2D(GKSFRMesh2D& mesh)
+{
+	for (int j = 0; j < mesh.cells_y; ++j)
+	{
+		for (int i = 0; i < mesh.cells_x; ++i)
+		{
+			GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, i, j)];
+			for (int q = 0; q < 3; ++q)
+			{
+				for (int p = 0; p < 3; ++p)
+				{
+					const double x = GKSFR_SolutionPointX2D(mesh, i, p);
+					const double y = GKSFR_SolutionPointY2D(mesh, j, q);
+					double prim[4];
+					GKSFR_DoubleMachPrimitive2D(prim, x, y, 0.0);
+					SetFRPointPrimitive2D(cell.Q[p][q], prim);
+				}
+			}
+		}
+	}
+}
+
 
 void riemann_problem_1d()
 {

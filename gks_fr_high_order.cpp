@@ -6,6 +6,7 @@ namespace
 {
 	const double kPi = 3.14159265358979323846;
 	const double kGLNode = std::sqrt(3.0 / 5.0);
+	double g_boundary_time_2d = 0.0;
 
 	void Zero3(double* a)
 	{
@@ -37,6 +38,26 @@ namespace
 		{
 			dst[m] = src[m];
 		}
+	}
+
+	void ZeroPointDerivatives2D(Point2d& point)
+	{
+		Zero4(point.der1x);
+		Zero4(point.der1y);
+		Zero4(point.der2xx);
+		Zero4(point.der2xy);
+		Zero4(point.der2yy);
+	}
+
+	void SetPointConservativeNoDerivatives2D(Point2d& point, const double* convar)
+	{
+		Copy4(point.convar, convar);
+		ZeroPointDerivatives2D(point);
+		point.x = 0.0;
+		point.y = 0.0;
+		point.normal[0] = 1.0;
+		point.normal[1] = 0.0;
+		point.is_reduce_order = false;
 	}
 
 	double LagrangeAt(int basis_id, double s)
@@ -390,6 +411,47 @@ namespace
 		}
 	}
 
+	void BuildBoundaryPointFromInner2D(
+		Point2d& ghost,
+		const Point2d& inner,
+		GKSFRBoundary2D boundary,
+		GKSFRBoundarySide2D side,
+		bool x_normal,
+		double x,
+		double y)
+	{
+		double inner_global[4];
+		if (x_normal)
+		{
+			Copy4(inner_global, inner.convar);
+		}
+		else
+		{
+			RotateYLocalToGlobal(inner_global, inner.convar);
+		}
+
+		double ghost_global[4];
+		GKSFR_BoundaryGhostState2D(
+			ghost_global,
+			inner_global,
+			boundary,
+			side,
+			x,
+			y,
+			g_boundary_time_2d);
+
+		if (x_normal)
+		{
+			SetPointConservativeNoDerivatives2D(ghost, ghost_global);
+		}
+		else
+		{
+			double ghost_local[4];
+			RotateGlobalToYLocal(ghost_local, ghost_global);
+			SetPointConservativeNoDerivatives2D(ghost, ghost_local);
+		}
+	}
+
 	void EvaluateCellStateAtXY(Point2d& trace, const GKSFRCell2D& cell, double hx, double hy, double xbar, double ybar)
 	{
 		const double r = 2.0 * xbar / hx;
@@ -471,13 +533,34 @@ namespace
 		const GKSFRMesh2D& mesh,
 		int face_i,
 		int cell_j,
+		GKSFRBoundary2D boundary,
 		double s)
 	{
-		const int left_i = PeriodicIndex(face_i - 1, mesh.cells_x);
-		const int right_i = PeriodicIndex(face_i, mesh.cells_x);
 		const int j = PeriodicIndex(cell_j, mesh.cells_y);
-		FillXFaceTrace(interface.left, mesh.cell[GKSFR_CellIndex2D(mesh, left_i, j)], mesh.dx, mesh.dy, true, s);
-		FillXFaceTrace(interface.right, mesh.cell[GKSFR_CellIndex2D(mesh, right_i, j)], mesh.dx, mesh.dy, false, s);
+		const double x = mesh.x_left + face_i * mesh.dx;
+		const double y = GKSFR_CellCenterY2D(mesh, j) + 0.5 * mesh.dy * s;
+		if (boundary == gksfr2d_periodic || (face_i > 0 && face_i < mesh.cells_x))
+		{
+			const int left_i = (boundary == gksfr2d_periodic)
+				? PeriodicIndex(face_i - 1, mesh.cells_x)
+				: face_i - 1;
+			const int right_i = (boundary == gksfr2d_periodic)
+				? PeriodicIndex(face_i, mesh.cells_x)
+				: face_i;
+			FillXFaceTrace(interface.left, mesh.cell[GKSFR_CellIndex2D(mesh, left_i, j)], mesh.dx, mesh.dy, true, s);
+			FillXFaceTrace(interface.right, mesh.cell[GKSFR_CellIndex2D(mesh, right_i, j)], mesh.dx, mesh.dy, false, s);
+			return;
+		}
+
+		if (face_i == 0)
+		{
+			FillXFaceTrace(interface.right, mesh.cell[GKSFR_CellIndex2D(mesh, 0, j)], mesh.dx, mesh.dy, false, s);
+			BuildBoundaryPointFromInner2D(interface.left, interface.right, boundary, gksfr2d_left_side, true, x, y);
+			return;
+		}
+
+		FillXFaceTrace(interface.left, mesh.cell[GKSFR_CellIndex2D(mesh, mesh.cells_x - 1, j)], mesh.dx, mesh.dy, true, s);
+		BuildBoundaryPointFromInner2D(interface.right, interface.left, boundary, gksfr2d_right_side, true, x, y);
 	}
 
 	void BuildYFaceTraceFRLocal(
@@ -485,13 +568,34 @@ namespace
 		const GKSFRMesh2D& mesh,
 		int cell_i,
 		int face_j,
+		GKSFRBoundary2D boundary,
 		double r)
 	{
 		const int i = PeriodicIndex(cell_i, mesh.cells_x);
-		const int bottom_j = PeriodicIndex(face_j - 1, mesh.cells_y);
-		const int top_j = PeriodicIndex(face_j, mesh.cells_y);
-		FillYFaceTraceLocal(interface.left, mesh.cell[GKSFR_CellIndex2D(mesh, i, bottom_j)], mesh.dx, mesh.dy, true, r);
-		FillYFaceTraceLocal(interface.right, mesh.cell[GKSFR_CellIndex2D(mesh, i, top_j)], mesh.dx, mesh.dy, false, r);
+		const double x = GKSFR_CellCenterX2D(mesh, i) + 0.5 * mesh.dx * r;
+		const double y = mesh.y_bottom + face_j * mesh.dy;
+		if (boundary == gksfr2d_periodic || (face_j > 0 && face_j < mesh.cells_y))
+		{
+			const int bottom_j = (boundary == gksfr2d_periodic)
+				? PeriodicIndex(face_j - 1, mesh.cells_y)
+				: face_j - 1;
+			const int top_j = (boundary == gksfr2d_periodic)
+				? PeriodicIndex(face_j, mesh.cells_y)
+				: face_j;
+			FillYFaceTraceLocal(interface.left, mesh.cell[GKSFR_CellIndex2D(mesh, i, bottom_j)], mesh.dx, mesh.dy, true, r);
+			FillYFaceTraceLocal(interface.right, mesh.cell[GKSFR_CellIndex2D(mesh, i, top_j)], mesh.dx, mesh.dy, false, r);
+			return;
+		}
+
+		if (face_j == 0)
+		{
+			FillYFaceTraceLocal(interface.right, mesh.cell[GKSFR_CellIndex2D(mesh, i, 0)], mesh.dx, mesh.dy, false, r);
+			BuildBoundaryPointFromInner2D(interface.left, interface.right, boundary, gksfr2d_bottom_side, false, x, y);
+			return;
+		}
+
+		FillYFaceTraceLocal(interface.left, mesh.cell[GKSFR_CellIndex2D(mesh, i, mesh.cells_y - 1)], mesh.dx, mesh.dy, true, r);
+		BuildBoundaryPointFromInner2D(interface.right, interface.left, boundary, gksfr2d_top_side, false, x, y);
 	}
 
 	void BuildCenterDerivativeFromFaces(
@@ -655,6 +759,7 @@ namespace
 		int tangential_index,
 		int tangential_point_id,
 		double dt,
+		GKSFRBoundary2D boundary,
 		bool x_normal,
 		double common_flux[4])
 	{
@@ -666,6 +771,7 @@ namespace
 				mesh,
 				normal_index,
 				tangential_index,
+				boundary,
 				GKSFR_GL_Point(tangential_point_id));
 		}
 		else
@@ -675,6 +781,7 @@ namespace
 				mesh,
 				tangential_index,
 				normal_index,
+				boundary,
 				GKSFR_GL_Point(tangential_point_id));
 		}
 		BuildCenterTraceFromFaces2D(interface);
@@ -1128,6 +1235,91 @@ double GKSFR_SolutionPointY2D(const GKSFRMesh2D& mesh, int j, int q)
 	return GKSFR_CellCenterY2D(mesh, j) + 0.5 * mesh.dy * GKSFR_GL_Point(q);
 }
 
+void GKSFR_SetBoundaryTime2D(double t)
+{
+	g_boundary_time_2d = t;
+}
+
+double GKSFR_GetBoundaryTime2D()
+{
+	return g_boundary_time_2d;
+}
+
+void GKSFR_DoubleMachPrimitive2D(double prim[4], double x, double y, double t)
+{
+	const double shock_x = 1.0 / 6.0 + (y + 20.0 * t) / std::sqrt(3.0);
+	if (x < shock_x)
+	{
+		prim[0] = 8.0;
+		prim[1] = 8.25 * std::cos(kPi / 6.0);
+		prim[2] = -8.25 * std::sin(kPi / 6.0);
+		prim[3] = 116.5;
+	}
+	else
+	{
+		prim[0] = 1.4;
+		prim[1] = 0.0;
+		prim[2] = 0.0;
+		prim[3] = 1.0;
+	}
+}
+
+void GKSFR_BoundaryGhostState2D(
+	double ghost_Q[4],
+	const double inner_Q[4],
+	GKSFRBoundary2D boundary,
+	GKSFRBoundarySide2D side,
+	double x,
+	double y,
+	double t)
+{
+	if (boundary == gksfr2d_double_mach)
+	{
+		const bool exact_inflow =
+			side == gksfr2d_left_side ||
+			side == gksfr2d_top_side;
+		if (exact_inflow)
+		{
+			double prim[4];
+			GKSFR_DoubleMachPrimitive2D(prim, x, y, t);
+			Primvar_to_convar_2D(ghost_Q, prim);
+			return;
+		}
+		if (side == gksfr2d_bottom_side && x >= 1.0 / 6.0)
+		{
+			double prim[4];
+			double inner_copy[4];
+			Copy4(inner_copy, inner_Q);
+			Convar_to_primvar_2D(prim, inner_copy);
+			prim[2] = -prim[2];
+			Primvar_to_convar_2D(ghost_Q, prim);
+			return;
+		}
+		Copy4(ghost_Q, inner_Q);
+		return;
+	}
+
+	if (boundary == gksfr2d_reflective)
+	{
+		double prim[4];
+		double inner_copy[4];
+		Copy4(inner_copy, inner_Q);
+		Convar_to_primvar_2D(prim, inner_copy);
+		if (side == gksfr2d_left_side || side == gksfr2d_right_side)
+		{
+			prim[1] = -prim[1];
+		}
+		else
+		{
+			prim[2] = -prim[2];
+		}
+		Primvar_to_convar_2D(ghost_Q, prim);
+		return;
+	}
+
+	Copy4(ghost_Q, inner_Q);
+}
+
 void GKSFR_ComputeCellCenterData2D(GKSFRCell2D& cell, double hx, double hy)
 {
 	const double a_gl = kGLNode;
@@ -1280,7 +1472,7 @@ void GKSFR_ComputeCommonInterfaceFluxes2D(
 {
 	x_face_fluxes.assign((mesh.cells_x + 1) * mesh.cells_y, GKSFRFaceFlux2D());
 	y_face_fluxes.assign(mesh.cells_x * (mesh.cells_y + 1), GKSFRFaceFlux2D());
-	if (boundary != gksfr2d_periodic || mesh.cells_x <= 0 || mesh.cells_y <= 0)
+	if (mesh.cells_x <= 0 || mesh.cells_y <= 0)
 	{
 		return;
 	}
@@ -1297,6 +1489,7 @@ void GKSFR_ComputeCommonInterfaceFluxes2D(
 					j,
 					q,
 					dt,
+					boundary,
 					true,
 					x_face_fluxes[XFaceIndex(mesh, face_i, j)].F[q]);
 			}
@@ -1315,6 +1508,7 @@ void GKSFR_ComputeCommonInterfaceFluxes2D(
 					i,
 					p,
 					dt,
+					boundary,
 					false,
 					y_face_fluxes[YFaceIndex(mesh, i, face_j)].F[p]);
 			}

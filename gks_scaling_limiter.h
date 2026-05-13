@@ -57,3 +57,9 @@ void GKSScalingLimiterApply2D(
 	GKSFRMesh2D& mesh,
 	const GKSScalingLimiterParam2D& param,
 	GKSScalingLimiterDiag2D& diag);
+
+void GKSScalingLimiterApply2D(
+	GKSFRMesh2D& mesh,
+	const std::vector<GKSCellAverage2D>& safe_cell_average,
+	const GKSScalingLimiterParam2D& param,
+	GKSScalingLimiterDiag2D& diag);

@@ -19,6 +19,17 @@ GKSSubcellMUSCLHancockStats1D::GKSSubcellMUSCLHancockStats1D()
 {
 }
 
+GKSSubcellMUSCLHancockStats2D::GKSSubcellMUSCLHancockStats2D()
+	: reconstructed_subcells(0),
+	  zero_slope_fallback_subcells(0),
+	  predicted_state_fallback_subcells(0),
+	  face_flux_fallback_faces(0),
+	  final_update_fallback_subcells(0),
+	  min_rho_update(1.0e300),
+	  min_p_update(1.0e300)
+{
+}
+
 namespace
 {
 	const double kMUSCLDensityFloor = 1.0e-12;
@@ -36,6 +47,14 @@ namespace
 		for (int m = 0; m < 3; ++m)
 		{
 			out[m] = 0.0;
+		}
+	}
+
+	void Copy4(double* dst, const double* src)
+	{
+		for (int m = 0; m < 4; ++m)
+		{
+			dst[m] = src[m];
 		}
 	}
 
@@ -252,6 +271,332 @@ namespace
 		}
 	}
 
+	bool StateFinite2D(const double Q[4])
+	{
+		return std::isfinite(Q[0]) && std::isfinite(Q[1]) &&
+			std::isfinite(Q[2]) && std::isfinite(Q[3]);
+	}
+
+	double PressureFromConservative2D(const double Q[4])
+	{
+		if (Q[0] <= 0.0)
+		{
+			return -std::numeric_limits<double>::infinity();
+		}
+		return (Gamma - 1.0) *
+			(Q[3] - 0.5 * (Q[1] * Q[1] + Q[2] * Q[2]) / Q[0]);
+	}
+
+	bool ConservativeAdmissible2D(const double Q[4])
+	{
+		return StateFinite2D(Q) &&
+			Q[0] > kMUSCLDensityFloor &&
+			PressureFromConservative2D(Q) > kMUSCLPressureFloor;
+	}
+
+	bool PrimitiveAdmissible2D(const double W[4])
+	{
+		return std::isfinite(W[0]) && std::isfinite(W[1]) &&
+			std::isfinite(W[2]) && std::isfinite(W[3]) &&
+			W[0] > kMUSCLDensityFloor && W[3] > kMUSCLPressureFloor;
+	}
+
+	void ConservativeToPrimitiveSafe2D(const double Q[4], double W[4], bool& ok)
+	{
+		double local_Q[4] = { Q[0], Q[1], Q[2], Q[3] };
+		Convar_to_primvar_2D(W, local_Q);
+		ok = PrimitiveAdmissible2D(W);
+	}
+
+	void PrimitiveToConservativeSafe2D(const double W[4], double Q[4])
+	{
+		double local_W[4] = { W[0], W[1], W[2], W[3] };
+		Primvar_to_convar_2D(Q, local_W);
+	}
+
+	void PhysicalFluxFromConservative2D_X(const double Q[4], double flux[4])
+	{
+		const double rho = Q[0];
+		const double mx = Q[1];
+		const double my = Q[2];
+		const double energy = Q[3];
+		const double u = mx / rho;
+		const double v = my / rho;
+		const double p = PressureFromConservative2D(Q);
+		flux[0] = mx;
+		flux[1] = mx * u + p;
+		flux[2] = mx * v;
+		flux[3] = u * (energy + p);
+	}
+
+	void PhysicalFluxFromConservative2D_Y(const double Q[4], double flux[4])
+	{
+		const double rho = Q[0];
+		const double mx = Q[1];
+		const double my = Q[2];
+		const double energy = Q[3];
+		const double u = mx / rho;
+		const double v = my / rho;
+		const double p = PressureFromConservative2D(Q);
+		flux[0] = my;
+		flux[1] = my * u;
+		flux[2] = my * v + p;
+		flux[3] = v * (energy + p);
+	}
+
+	bool FluxFinite2D(const double flux[4])
+	{
+		return std::isfinite(flux[0]) && std::isfinite(flux[1]) &&
+			std::isfinite(flux[2]) && std::isfinite(flux[3]);
+	}
+
+	void FirstOrderKFVSFaceFlux2D_X(
+		const double left_Q[4],
+		const double right_Q[4],
+		double dt,
+		double flux_avg[4])
+	{
+		KFVS1_TimeAveragedFlux2D_X(left_Q, right_Q, dt, flux_avg);
+	}
+
+	void FirstOrderKFVSFaceFlux2D_Y(
+		const double bottom_Q[4],
+		const double top_Q[4],
+		double dt,
+		double flux_avg[4])
+	{
+		KFVS1_TimeAveragedFlux2D_Y(bottom_Q, top_Q, dt, flux_avg);
+	}
+
+	void ComputeFirstOrderInternalFluxes2D(
+		GKSSubcellBranch2D& branch,
+		double dt)
+	{
+		for (int i = 0; i < branch.cells_x; ++i)
+		{
+			for (int j = 0; j < branch.cells_y; ++j)
+			{
+				GKSSubcellCell2D& cell = branch.cell[GKSSubcellCellIndex2D(branch, i, j)];
+				for (int f = 0; f < 2; ++f)
+				{
+					for (int q = 0; q < 3; ++q)
+					{
+						FirstOrderKFVSFaceFlux2D_X(
+							cell.low_dof[f][q],
+							cell.low_dof[f + 1][q],
+							dt,
+							cell.internal_flux_x[f][q]);
+					}
+				}
+				for (int p = 0; p < 3; ++p)
+				{
+					for (int f = 0; f < 2; ++f)
+					{
+						FirstOrderKFVSFaceFlux2D_Y(
+							cell.low_dof[p][f],
+							cell.low_dof[p][f + 1],
+							dt,
+							cell.internal_flux_y[p][f]);
+					}
+				}
+			}
+		}
+	}
+
+	void ComputeMUSCLHancockInternalFluxes2D(
+		GKSSubcellBranch2D& branch,
+		double dt)
+	{
+		branch.muscl_stats = GKSSubcellMUSCLHancockStats2D();
+
+		double center_x[3], center_y[3], face_x[4], face_y[4];
+		for (int i = 0; i < 3; ++i)
+		{
+			center_x[i] = 0.5 * branch.dx * branch.geom.subcell_center_s[i];
+			center_y[i] = 0.5 * branch.dy * branch.geom.subcell_center_s[i];
+		}
+		for (int f = 0; f < 4; ++f)
+		{
+			face_x[f] = 0.5 * branch.dx * branch.geom.subcell_face_s[f];
+			face_y[f] = 0.5 * branch.dy * branch.geom.subcell_face_s[f];
+		}
+
+		for (int ei = 0; ei < branch.cells_x; ++ei)
+		{
+			for (int ej = 0; ej < branch.cells_y; ++ej)
+			{
+				GKSSubcellCell2D& cell = branch.cell[GKSSubcellCellIndex2D(branch, ei, ej)];
+				double W[3][3][4];
+				bool center_ok[3][3];
+				for (int i = 0; i < 3; ++i)
+				{
+					for (int j = 0; j < 3; ++j)
+					{
+						ConservativeToPrimitiveSafe2D(cell.low_dof[i][j], W[i][j], center_ok[i][j]);
+					}
+				}
+
+				double Q_left_star[3][3][4];
+				double Q_right_star[3][3][4];
+				for (int j = 0; j < 3; ++j)
+				{
+					for (int i = 0; i < 3; ++i)
+					{
+						branch.muscl_stats.reconstructed_subcells++;
+						double WL[4] = { W[i][j][0], W[i][j][1], W[i][j][2], W[i][j][3] };
+						double WR[4] = { W[i][j][0], W[i][j][1], W[i][j][2], W[i][j][3] };
+						bool use_zero_slope = !center_ok[i][j];
+
+						if (!use_zero_slope && i > 0 && i < 2 &&
+							center_ok[i - 1][j] && center_ok[i + 1][j])
+						{
+							for (int m = 0; m < 4; ++m)
+							{
+								const double slope_left = (W[i][j][m] - W[i - 1][j][m]) / (center_x[i] - center_x[i - 1]);
+								const double slope_right = (W[i + 1][j][m] - W[i][j][m]) / (center_x[i + 1] - center_x[i]);
+								const double slope = Minmod(slope_left, slope_right);
+								WL[m] = W[i][j][m] - slope * (center_x[i] - face_x[i]);
+								WR[m] = W[i][j][m] + slope * (face_x[i + 1] - center_x[i]);
+							}
+							use_zero_slope = !PrimitiveAdmissible2D(WL) || !PrimitiveAdmissible2D(WR);
+						}
+
+						if (use_zero_slope)
+						{
+							branch.muscl_stats.zero_slope_fallback_subcells++;
+							Copy4(Q_left_star[i][j], cell.low_dof[i][j]);
+							Copy4(Q_right_star[i][j], cell.low_dof[i][j]);
+							continue;
+						}
+
+						double QL[4], QR[4], FL[4], FR[4];
+						PrimitiveToConservativeSafe2D(WL, QL);
+						PrimitiveToConservativeSafe2D(WR, QR);
+						PhysicalFluxFromConservative2D_X(QL, FL);
+						PhysicalFluxFromConservative2D_X(QR, FR);
+						for (int m = 0; m < 4; ++m)
+						{
+							const double half_update =
+								0.5 * dt / branch.geom.subcell_length_x[i] * (FR[m] - FL[m]);
+							Q_left_star[i][j][m] = QL[m] - half_update;
+							Q_right_star[i][j][m] = QR[m] - half_update;
+						}
+						if (!ConservativeAdmissible2D(Q_left_star[i][j]) ||
+							!ConservativeAdmissible2D(Q_right_star[i][j]))
+						{
+							branch.muscl_stats.predicted_state_fallback_subcells++;
+							Copy4(Q_left_star[i][j], cell.low_dof[i][j]);
+							Copy4(Q_right_star[i][j], cell.low_dof[i][j]);
+						}
+					}
+					for (int f = 0; f < 2; ++f)
+					{
+						bool use_first_order_flux =
+							!ConservativeAdmissible2D(Q_right_star[f][j]) ||
+							!ConservativeAdmissible2D(Q_left_star[f + 1][j]);
+						if (!use_first_order_flux)
+						{
+							FirstOrderKFVSFaceFlux2D_X(
+								Q_right_star[f][j],
+								Q_left_star[f + 1][j],
+								dt,
+								cell.internal_flux_x[f][j]);
+							use_first_order_flux = !FluxFinite2D(cell.internal_flux_x[f][j]);
+						}
+						if (use_first_order_flux)
+						{
+							branch.muscl_stats.face_flux_fallback_faces++;
+							FirstOrderKFVSFaceFlux2D_X(
+								cell.low_dof[f][j],
+								cell.low_dof[f + 1][j],
+								dt,
+								cell.internal_flux_x[f][j]);
+						}
+					}
+				}
+
+				double Q_bottom_star[3][3][4];
+				double Q_top_star[3][3][4];
+				for (int i = 0; i < 3; ++i)
+				{
+					for (int j = 0; j < 3; ++j)
+					{
+						branch.muscl_stats.reconstructed_subcells++;
+						double WB[4] = { W[i][j][0], W[i][j][1], W[i][j][2], W[i][j][3] };
+						double WT[4] = { W[i][j][0], W[i][j][1], W[i][j][2], W[i][j][3] };
+						bool use_zero_slope = !center_ok[i][j];
+
+						if (!use_zero_slope && j > 0 && j < 2 &&
+							center_ok[i][j - 1] && center_ok[i][j + 1])
+						{
+							for (int m = 0; m < 4; ++m)
+							{
+								const double slope_bottom = (W[i][j][m] - W[i][j - 1][m]) / (center_y[j] - center_y[j - 1]);
+								const double slope_top = (W[i][j + 1][m] - W[i][j][m]) / (center_y[j + 1] - center_y[j]);
+								const double slope = Minmod(slope_bottom, slope_top);
+								WB[m] = W[i][j][m] - slope * (center_y[j] - face_y[j]);
+								WT[m] = W[i][j][m] + slope * (face_y[j + 1] - center_y[j]);
+							}
+							use_zero_slope = !PrimitiveAdmissible2D(WB) || !PrimitiveAdmissible2D(WT);
+						}
+
+						if (use_zero_slope)
+						{
+							branch.muscl_stats.zero_slope_fallback_subcells++;
+							Copy4(Q_bottom_star[i][j], cell.low_dof[i][j]);
+							Copy4(Q_top_star[i][j], cell.low_dof[i][j]);
+							continue;
+						}
+
+						double QB[4], QT[4], GB[4], GT[4];
+						PrimitiveToConservativeSafe2D(WB, QB);
+						PrimitiveToConservativeSafe2D(WT, QT);
+						PhysicalFluxFromConservative2D_Y(QB, GB);
+						PhysicalFluxFromConservative2D_Y(QT, GT);
+						for (int m = 0; m < 4; ++m)
+						{
+							const double half_update =
+								0.5 * dt / branch.geom.subcell_length_y[j] * (GT[m] - GB[m]);
+							Q_bottom_star[i][j][m] = QB[m] - half_update;
+							Q_top_star[i][j][m] = QT[m] - half_update;
+						}
+						if (!ConservativeAdmissible2D(Q_bottom_star[i][j]) ||
+							!ConservativeAdmissible2D(Q_top_star[i][j]))
+						{
+							branch.muscl_stats.predicted_state_fallback_subcells++;
+							Copy4(Q_bottom_star[i][j], cell.low_dof[i][j]);
+							Copy4(Q_top_star[i][j], cell.low_dof[i][j]);
+						}
+					}
+					for (int f = 0; f < 2; ++f)
+					{
+						bool use_first_order_flux =
+							!ConservativeAdmissible2D(Q_top_star[i][f]) ||
+							!ConservativeAdmissible2D(Q_bottom_star[i][f + 1]);
+						if (!use_first_order_flux)
+						{
+							FirstOrderKFVSFaceFlux2D_Y(
+								Q_top_star[i][f],
+								Q_bottom_star[i][f + 1],
+								dt,
+								cell.internal_flux_y[i][f]);
+							use_first_order_flux = !FluxFinite2D(cell.internal_flux_y[i][f]);
+						}
+						if (use_first_order_flux)
+						{
+							branch.muscl_stats.face_flux_fallback_faces++;
+							FirstOrderKFVSFaceFlux2D_Y(
+								cell.low_dof[i][f],
+								cell.low_dof[i][f + 1],
+								dt,
+								cell.internal_flux_y[i][f]);
+						}
+					}
+				}
+			}
+		}
+	}
+
 	void FaceFluxByMode2D_X(
 		const double left_Q[4],
 		const double right_Q[4],
@@ -268,6 +613,35 @@ namespace
 		double flux_avg[4])
 	{
 		KFVS1_TimeAveragedFlux2D_Y(bottom_Q, top_Q, dt, flux_avg);
+	}
+
+	double SubcellSolutionPointX2D(const GKSSubcellBranch2D& branch, int i, int p)
+	{
+		return branch.x_left + (i + 0.5) * branch.dx + 0.5 * branch.dx * GKSFR_GL_Point(p);
+	}
+
+	double SubcellSolutionPointY2D(const GKSSubcellBranch2D& branch, int j, int q)
+	{
+		return branch.y_bottom + (j + 0.5) * branch.dy + 0.5 * branch.dy * GKSFR_GL_Point(q);
+	}
+
+	void BoundaryGhostForLowOrder2D(
+		double ghost_Q[4],
+		const double inner_Q[4],
+		const GKSSubcellBranch2D& branch,
+		GKSFRBoundary2D boundary,
+		GKSFRBoundarySide2D side,
+		double x,
+		double y)
+	{
+		GKSFR_BoundaryGhostState2D(
+			ghost_Q,
+			inner_Q,
+			boundary,
+			side,
+			x,
+			y,
+			GKSFR_GetBoundaryTime2D());
 	}
 
 	int XFaceIndex2D(int cells_y, int face_i, int cell_j)
@@ -527,7 +901,12 @@ void GKSSubcellBranchResize2D(
 	GKSSubcellBuildGeometry2D(branch.geom, mesh.dx, mesh.dy);
 	branch.cells_x = mesh.cells_x;
 	branch.cells_y = mesh.cells_y;
+	branch.x_left = mesh.x_left;
+	branch.y_bottom = mesh.y_bottom;
+	branch.dx = mesh.dx;
+	branch.dy = mesh.dy;
 	branch.cell.resize(mesh.cells_x * mesh.cells_y);
+	branch.muscl_stats = GKSSubcellMUSCLHancockStats2D();
 }
 
 int GKSSubcellCellIndex2D(const GKSSubcellBranch2D& branch, int i, int j)
@@ -566,35 +945,21 @@ void GKSSubcellComputeInternalFluxes2D(
 	GKSSubcellBranch2D& branch,
 	double dt)
 {
-	for (int i = 0; i < branch.cells_x; ++i)
+	GKSSubcellComputeInternalFluxes2D(branch, dt, low_order_type);
+}
+
+void GKSSubcellComputeInternalFluxes2D(
+	GKSSubcellBranch2D& branch,
+	double dt,
+	GKSSubcellLowOrderType mode)
+{
+	if (mode == MUSCL_HANCOCK_2d)
 	{
-		for (int j = 0; j < branch.cells_y; ++j)
-		{
-			GKSSubcellCell2D& cell = branch.cell[GKSSubcellCellIndex2D(branch, i, j)];
-			for (int f = 0; f < 2; ++f)
-			{
-				for (int q = 0; q < 3; ++q)
-				{
-					FaceFluxByMode2D_X(
-						cell.low_dof[f][q],
-						cell.low_dof[f + 1][q],
-						dt,
-						cell.internal_flux_x[f][q]);
-				}
-			}
-			for (int p = 0; p < 3; ++p)
-			{
-				for (int f = 0; f < 2; ++f)
-				{
-					FaceFluxByMode2D_Y(
-						cell.low_dof[p][f],
-						cell.low_dof[p][f + 1],
-						dt,
-						cell.internal_flux_y[p][f]);
-				}
-			}
-		}
+		ComputeMUSCLHancockInternalFluxes2D(branch, dt);
+		return;
 	}
+	branch.muscl_stats = GKSSubcellMUSCLHancockStats2D();
+	ComputeFirstOrderInternalFluxes2D(branch, dt);
 }
 
 void GKSSubcellComputeLowFaceFluxes2D(
@@ -606,23 +971,50 @@ void GKSSubcellComputeLowFaceFluxes2D(
 {
 	x_face_fluxes.assign((branch.cells_x + 1) * branch.cells_y, GKSFRFaceFlux2D());
 	y_face_fluxes.assign(branch.cells_x * (branch.cells_y + 1), GKSFRFaceFlux2D());
-	if (boundary != gksfr2d_periodic)
+	if (branch.cells_x <= 0 || branch.cells_y <= 0)
 	{
 		return;
 	}
 	for (int face_i = 0; face_i <= branch.cells_x; ++face_i)
 	{
-		const int left_i = (face_i + branch.cells_x - 1) % branch.cells_x;
-		const int right_i = face_i % branch.cells_x;
 		for (int j = 0; j < branch.cells_y; ++j)
 		{
-			const GKSSubcellCell2D& left = branch.cell[GKSSubcellCellIndex2D(branch, left_i, j)];
-			const GKSSubcellCell2D& right = branch.cell[GKSSubcellCellIndex2D(branch, right_i, j)];
 			for (int q = 0; q < 3; ++q)
 			{
+				double left_Q[4];
+				double right_Q[4];
+				if (boundary == gksfr2d_periodic || (face_i > 0 && face_i < branch.cells_x))
+				{
+					const int left_i = (boundary == gksfr2d_periodic)
+						? (face_i + branch.cells_x - 1) % branch.cells_x
+						: face_i - 1;
+					const int right_i = (boundary == gksfr2d_periodic)
+						? face_i % branch.cells_x
+						: face_i;
+					const GKSSubcellCell2D& left = branch.cell[GKSSubcellCellIndex2D(branch, left_i, j)];
+					const GKSSubcellCell2D& right = branch.cell[GKSSubcellCellIndex2D(branch, right_i, j)];
+					Copy4(left_Q, left.low_dof[2][q]);
+					Copy4(right_Q, right.low_dof[0][q]);
+				}
+				else if (face_i == 0)
+				{
+					const GKSSubcellCell2D& right = branch.cell[GKSSubcellCellIndex2D(branch, 0, j)];
+					Copy4(right_Q, right.low_dof[0][q]);
+					const double x = branch.x_left;
+					const double y = SubcellSolutionPointY2D(branch, j, q);
+					BoundaryGhostForLowOrder2D(left_Q, right_Q, branch, boundary, gksfr2d_left_side, x, y);
+				}
+				else
+				{
+					const GKSSubcellCell2D& left = branch.cell[GKSSubcellCellIndex2D(branch, branch.cells_x - 1, j)];
+					Copy4(left_Q, left.low_dof[2][q]);
+					const double x = branch.x_left + branch.cells_x * branch.dx;
+					const double y = SubcellSolutionPointY2D(branch, j, q);
+					BoundaryGhostForLowOrder2D(right_Q, left_Q, branch, boundary, gksfr2d_right_side, x, y);
+				}
 				FaceFluxByMode2D_X(
-					left.low_dof[2][q],
-					right.low_dof[0][q],
+					left_Q,
+					right_Q,
 					dt,
 					x_face_fluxes[XFaceIndex2D(branch.cells_y, face_i, j)].F[q]);
 			}
@@ -632,15 +1024,42 @@ void GKSSubcellComputeLowFaceFluxes2D(
 	{
 		for (int face_j = 0; face_j <= branch.cells_y; ++face_j)
 		{
-			const int bottom_j = (face_j + branch.cells_y - 1) % branch.cells_y;
-			const int top_j = face_j % branch.cells_y;
-			const GKSSubcellCell2D& bottom = branch.cell[GKSSubcellCellIndex2D(branch, i, bottom_j)];
-			const GKSSubcellCell2D& top = branch.cell[GKSSubcellCellIndex2D(branch, i, top_j)];
 			for (int p = 0; p < 3; ++p)
 			{
+				double bottom_Q[4];
+				double top_Q[4];
+				if (boundary == gksfr2d_periodic || (face_j > 0 && face_j < branch.cells_y))
+				{
+					const int bottom_j = (boundary == gksfr2d_periodic)
+						? (face_j + branch.cells_y - 1) % branch.cells_y
+						: face_j - 1;
+					const int top_j = (boundary == gksfr2d_periodic)
+						? face_j % branch.cells_y
+						: face_j;
+					const GKSSubcellCell2D& bottom = branch.cell[GKSSubcellCellIndex2D(branch, i, bottom_j)];
+					const GKSSubcellCell2D& top = branch.cell[GKSSubcellCellIndex2D(branch, i, top_j)];
+					Copy4(bottom_Q, bottom.low_dof[p][2]);
+					Copy4(top_Q, top.low_dof[p][0]);
+				}
+				else if (face_j == 0)
+				{
+					const GKSSubcellCell2D& top = branch.cell[GKSSubcellCellIndex2D(branch, i, 0)];
+					Copy4(top_Q, top.low_dof[p][0]);
+					const double x = SubcellSolutionPointX2D(branch, i, p);
+					const double y = branch.y_bottom;
+					BoundaryGhostForLowOrder2D(bottom_Q, top_Q, branch, boundary, gksfr2d_bottom_side, x, y);
+				}
+				else
+				{
+					const GKSSubcellCell2D& bottom = branch.cell[GKSSubcellCellIndex2D(branch, i, branch.cells_y - 1)];
+					Copy4(bottom_Q, bottom.low_dof[p][2]);
+					const double x = SubcellSolutionPointX2D(branch, i, p);
+					const double y = branch.y_bottom + branch.cells_y * branch.dy;
+					BoundaryGhostForLowOrder2D(top_Q, bottom_Q, branch, boundary, gksfr2d_top_side, x, y);
+				}
 				FaceFluxByMode2D_Y(
-					bottom.low_dof[p][2],
-					top.low_dof[p][0],
+					bottom_Q,
+					top_Q,
 					dt,
 					y_face_fluxes[YFaceIndex2D(branch.cells_y, i, face_j)].F[p]);
 			}
@@ -750,6 +1169,50 @@ void GKSSubcellUpdateLowOrderDofs2D(
 			}
 		}
 		GKSSubcellBigCellAverageFromLowOrderDofs2D(branch.geom, cell.low_dof_new, cell.cell_avg_new);
+	}
+}
+
+void GKSSubcellFallbackBadMUSCLUpdates2D(
+	GKSSubcellBranch2D& branch,
+	const GKSSubcellBranch2D& kfvs_fallback_branch,
+	double dt)
+{
+	if (low_order_type != MUSCL_HANCOCK_2d)
+	{
+		return;
+	}
+	for (int e = 0; e < static_cast<int>(branch.cell.size()); ++e)
+	{
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				double candidate[4];
+				for (int m = 0; m < 4; ++m)
+				{
+					candidate[m] = branch.cell[e].low_dof[i][j][m]
+						+ dt * branch.cell[e].residual_subcell[i][j][m];
+				}
+
+				if (StateFinite2D(candidate) && candidate[0] > 0.0)
+				{
+					branch.muscl_stats.min_rho_update =
+						std::min(branch.muscl_stats.min_rho_update, candidate[0]);
+					branch.muscl_stats.min_p_update =
+						std::min(branch.muscl_stats.min_p_update, PressureFromConservative2D(candidate));
+				}
+
+				if (!ConservativeAdmissible2D(candidate))
+				{
+					branch.muscl_stats.final_update_fallback_subcells++;
+					for (int m = 0; m < 4; ++m)
+					{
+						branch.cell[e].residual_subcell[i][j][m] =
+							kfvs_fallback_branch.cell[e].residual_subcell[i][j][m];
+					}
+				}
+			}
+		}
 	}
 }
 

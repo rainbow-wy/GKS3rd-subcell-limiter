@@ -8,7 +8,8 @@
 enum GKSSubcellLowOrderType
 {
 	KFVS1,
-	MUSCL_HANCOCK
+	MUSCL_HANCOCK,
+	MUSCL_HANCOCK_2d
 };
 
 extern GKSSubcellLowOrderType low_order_type;
@@ -24,6 +25,19 @@ struct GKSSubcellMUSCLHancockStats1D
 	double min_p_update;
 
 	GKSSubcellMUSCLHancockStats1D();
+};
+
+struct GKSSubcellMUSCLHancockStats2D
+{
+	int reconstructed_subcells;
+	int zero_slope_fallback_subcells;
+	int predicted_state_fallback_subcells;
+	int face_flux_fallback_faces;
+	int final_update_fallback_subcells;
+	double min_rho_update;
+	double min_p_update;
+
+	GKSSubcellMUSCLHancockStats2D();
 };
 
 struct GKSSubcellCell1D
@@ -60,7 +74,12 @@ struct GKSSubcellBranch2D
 	GKSSubcellGeom2D geom;
 	int cells_x;
 	int cells_y;
+	double x_left;
+	double y_bottom;
+	double dx;
+	double dy;
 	std::vector<GKSSubcellCell2D> cell;
+	GKSSubcellMUSCLHancockStats2D muscl_stats;
 };
 
 void GKSSubcellBranchResize1D(
@@ -125,6 +144,11 @@ void GKSSubcellComputeInternalFluxes2D(
 	GKSSubcellBranch2D& branch,
 	double dt);
 
+void GKSSubcellComputeInternalFluxes2D(
+	GKSSubcellBranch2D& branch,
+	double dt,
+	GKSSubcellLowOrderType mode);
+
 void GKSSubcellComputeLowFaceFluxes2D(
 	const GKSSubcellBranch2D& branch,
 	double dt,
@@ -142,6 +166,11 @@ void GKSSubcellAddFaceResiduals2D(
 
 void GKSSubcellUpdateLowOrderDofs2D(
 	GKSSubcellBranch2D& branch,
+	double dt);
+
+void GKSSubcellFallbackBadMUSCLUpdates2D(
+	GKSSubcellBranch2D& branch,
+	const GKSSubcellBranch2D& kfvs_fallback_branch,
 	double dt);
 
 void GKSSubcellAdvanceWithFaceFluxes2D(

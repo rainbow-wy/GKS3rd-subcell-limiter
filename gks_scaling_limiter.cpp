@@ -117,6 +117,18 @@ namespace
 			(U[3] - 0.5 * (U[1] * U[1] + U[2] * U[2]) / U[0]);
 	}
 
+	bool StateFinite2D(const double U[4])
+	{
+		for (int m = 0; m < 4; ++m)
+		{
+			if (!std::isfinite(U[m]))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
 	bool StateAdmissibleFromAverageBlend2D(
 		const double Uavg[4],
 		const double Upoint[4],
@@ -144,6 +156,10 @@ namespace
 		const double Upoint[4],
 		double p_floor)
 	{
+		if (!StateFinite2D(Upoint))
+		{
+			return 0.0;
+		}
 		if (Pressure2D(Upoint) >= p_floor)
 		{
 			return 1.0;
@@ -263,6 +279,20 @@ void GKSScalingLimiterApply2D(
 	const GKSScalingLimiterParam2D& param,
 	GKSScalingLimiterDiag2D& diag)
 {
+	std::vector<GKSCellAverage2D> cell_average(mesh.cells_x * mesh.cells_y);
+	for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
+	{
+		GKSSubcellBigCellAverageFromPoints2D(mesh.cell[e].Q, cell_average[e].U);
+	}
+	GKSScalingLimiterApply2D(mesh, cell_average, param, diag);
+}
+
+void GKSScalingLimiterApply2D(
+	GKSFRMesh2D& mesh,
+	const std::vector<GKSCellAverage2D>& safe_cell_average,
+	const GKSScalingLimiterParam2D& param,
+	GKSScalingLimiterDiag2D& diag)
+{
 	const int cells = mesh.cells_x * mesh.cells_y;
 	diag.theta_rho.assign(cells, 1.0);
 	diag.theta_p.assign(cells, 1.0);
@@ -272,7 +302,23 @@ void GKSScalingLimiterApply2D(
 	for (int e = 0; e < cells; ++e)
 	{
 		double Uavg[4];
-		GKSSubcellBigCellAverageFromPoints2D(mesh.cell[e].Q, Uavg);
+		if (static_cast<int>(safe_cell_average.size()) == cells &&
+			StateAdmissibleFromAverageBlend2D(
+				safe_cell_average[e].U,
+				safe_cell_average[e].U,
+				1.0,
+				param.rho_floor,
+				param.p_floor))
+		{
+			for (int m = 0; m < 4; ++m)
+			{
+				Uavg[m] = safe_cell_average[e].U[m];
+			}
+		}
+		else
+		{
+			GKSSubcellBigCellAverageFromPoints2D(mesh.cell[e].Q, Uavg);
+		}
 
 		double theta_rho = 1.0;
 		for (int i = 0; i < 3; ++i)
@@ -280,10 +326,10 @@ void GKSScalingLimiterApply2D(
 			for (int j = 0; j < 3; ++j)
 			{
 				const double rho_i = mesh.cell[e].Q[i][j][0];
-				if (rho_i < param.rho_floor)
+				if (!StateFinite2D(mesh.cell[e].Q[i][j]) || rho_i < param.rho_floor)
 				{
 					const double denom = Uavg[0] - rho_i;
-					if (denom <= 1.0e-14)
+					if (!std::isfinite(denom) || denom <= 1.0e-14)
 					{
 						theta_rho = 0.0;
 					}
@@ -304,8 +350,15 @@ void GKSScalingLimiterApply2D(
 			{
 				for (int m = 0; m < 4; ++m)
 				{
-					rho_limited[i][j][m] = Uavg[m]
-						+ theta_rho * (mesh.cell[e].Q[i][j][m] - Uavg[m]);
+					if (theta_rho <= 1.0e-14 || !StateFinite2D(mesh.cell[e].Q[i][j]))
+					{
+						rho_limited[i][j][m] = Uavg[m];
+					}
+					else
+					{
+						rho_limited[i][j][m] = Uavg[m]
+							+ theta_rho * (mesh.cell[e].Q[i][j][m] - Uavg[m]);
+					}
 				}
 			}
 		}
@@ -346,8 +399,15 @@ void GKSScalingLimiterApply2D(
 			{
 				for (int m = 0; m < 4; ++m)
 				{
-					mesh.cell[e].Q[i][j][m] = Uavg[m]
-						+ theta * (mesh.cell[e].Q[i][j][m] - Uavg[m]);
+					if (theta <= 1.0e-14 || !StateFinite2D(mesh.cell[e].Q[i][j]))
+					{
+						mesh.cell[e].Q[i][j][m] = Uavg[m];
+					}
+					else
+					{
+						mesh.cell[e].Q[i][j][m] = Uavg[m]
+							+ theta * (mesh.cell[e].Q[i][j][m] - Uavg[m]);
+					}
 				}
 			}
 		}

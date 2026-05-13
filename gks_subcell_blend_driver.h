@@ -68,6 +68,7 @@ struct GKSSubcellFrameworkDiag2D
 	std::vector<double> alpha_final;
 	GKSFluxLimiterDiag2D flux_diag;
 	GKSScalingLimiterDiag2D scaling_diag;
+	GKSSubcellMUSCLHancockStats2D muscl_stats;
 	double min_rho;
 	double min_p;
 	double max_alpha;
@@ -94,3 +95,4 @@ void accuracy_sinwave_1d_gks_subcell();
 void riemann_problem_1d_gks_subcell();
 void accuracy_sinwave_2d_gks_subcell();
 void riemann_problem_2d_gks_subcell();
+void double_mach_reflection_2d_gks_subcell();
