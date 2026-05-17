@@ -3,6 +3,7 @@
 #include "function.h"
 #include "gks_basic.h"
 #include "gks_fr_adapter.h"
+#include "gks_kfvs_adapter.h"
 #include "riemann_problem.h"
 
 #include <algorithm>
@@ -41,6 +42,13 @@ GKSSubcellFrameworkConfig2D::GKSSubcellFrameworkConfig2D()
 	  low_mode(KFVS1),
 	  use_flux_limiter(true),
 	  use_scaling_limiter(true)
+{
+}
+
+GKSSubcellMask2D::GKSSubcellMask2D()
+	: enabled(false),
+	  cells_x(0),
+	  cells_y(0)
 {
 }
 
@@ -229,6 +237,190 @@ namespace
 			(U[3] - 0.5 * (U[1] * U[1] + U[2] * U[2]) / U[0]);
 	}
 
+	bool MaskCellActive2D(const GKSSubcellMask2D* mask, const GKSFRMesh2D& mesh, int i, int j)
+	{
+		if (mask == nullptr || !mask->enabled)
+		{
+			return true;
+		}
+		if (i < 0 || i >= mesh.cells_x || j < 0 || j >= mesh.cells_y)
+		{
+			return false;
+		}
+		const int e = GKSFR_CellIndex2D(mesh, i, j);
+		if (e < 0 || e >= static_cast<int>(mask->active.size()))
+		{
+			return false;
+		}
+		return mask->active[e] != 0;
+	}
+
+	bool MaskCellActive2D(const GKSSubcellMask2D* mask, const GKSSubcellBranch2D& branch, int i, int j)
+	{
+		if (mask == nullptr || !mask->enabled)
+		{
+			return true;
+		}
+		if (i < 0 || i >= branch.cells_x || j < 0 || j >= branch.cells_y)
+		{
+			return false;
+		}
+		const int e = i * branch.cells_y + j;
+		if (e < 0 || e >= static_cast<int>(mask->active.size()))
+		{
+			return false;
+		}
+		return mask->active[e] != 0;
+	}
+
+	void ReflectState2D(double out_Q[4], const double in_Q[4], bool x_normal)
+	{
+		double prim[4];
+		double local_Q[4];
+		for (int m = 0; m < 4; ++m)
+		{
+			local_Q[m] = in_Q[m];
+		}
+		Convar_to_primvar_2D(prim, local_Q);
+		if (x_normal)
+		{
+			prim[1] = -prim[1];
+		}
+		else
+		{
+			prim[2] = -prim[2];
+		}
+		Primvar_to_convar_2D(out_Q, prim);
+	}
+
+	void OverrideMaskedWallFaceFluxes2D(
+		const GKSSubcellMask2D* mask,
+		const GKSSubcellBranch2D& branch,
+		double dt,
+		std::vector<GKSFRFaceFlux2D>& x_face_fluxes,
+		std::vector<GKSFRFaceFlux2D>& y_face_fluxes)
+	{
+		if (mask == nullptr || !mask->enabled)
+		{
+			return;
+		}
+
+		for (int face_i = 1; face_i < branch.cells_x; ++face_i)
+		{
+			for (int j = 0; j < branch.cells_y; ++j)
+			{
+				const bool left_active = MaskCellActive2D(mask, branch, face_i - 1, j);
+				const bool right_active = MaskCellActive2D(mask, branch, face_i, j);
+				if (left_active == right_active)
+				{
+					continue;
+				}
+				const int face_index = face_i * branch.cells_y + j;
+				for (int q = 0; q < 3; ++q)
+				{
+					double ghost_Q[4];
+					if (left_active)
+					{
+						const GKSSubcellCell2D& left = branch.cell[GKSSubcellCellIndex2D(branch, face_i - 1, j)];
+						ReflectState2D(ghost_Q, left.low_dof[2][q], true);
+						KFVS1_TimeAveragedFlux2D_X(left.low_dof[2][q], ghost_Q, dt, x_face_fluxes[face_index].F[q]);
+					}
+					else
+					{
+						const GKSSubcellCell2D& right = branch.cell[GKSSubcellCellIndex2D(branch, face_i, j)];
+						ReflectState2D(ghost_Q, right.low_dof[0][q], true);
+						KFVS1_TimeAveragedFlux2D_X(ghost_Q, right.low_dof[0][q], dt, x_face_fluxes[face_index].F[q]);
+					}
+				}
+			}
+		}
+
+		for (int i = 0; i < branch.cells_x; ++i)
+		{
+			for (int face_j = 1; face_j < branch.cells_y; ++face_j)
+			{
+				const bool bottom_active = MaskCellActive2D(mask, branch, i, face_j - 1);
+				const bool top_active = MaskCellActive2D(mask, branch, i, face_j);
+				if (bottom_active == top_active)
+				{
+					continue;
+				}
+				const int face_index = i * (branch.cells_y + 1) + face_j;
+				for (int p = 0; p < 3; ++p)
+				{
+					double ghost_Q[4];
+					if (bottom_active)
+					{
+						const GKSSubcellCell2D& bottom = branch.cell[GKSSubcellCellIndex2D(branch, i, face_j - 1)];
+						ReflectState2D(ghost_Q, bottom.low_dof[p][2], false);
+						KFVS1_TimeAveragedFlux2D_Y(bottom.low_dof[p][2], ghost_Q, dt, y_face_fluxes[face_index].F[p]);
+					}
+					else
+					{
+						const GKSSubcellCell2D& top = branch.cell[GKSSubcellCellIndex2D(branch, i, face_j)];
+						ReflectState2D(ghost_Q, top.low_dof[p][0], false);
+						KFVS1_TimeAveragedFlux2D_Y(ghost_Q, top.low_dof[p][0], dt, y_face_fluxes[face_index].F[p]);
+					}
+				}
+			}
+		}
+	}
+
+	void RestoreInactiveCells2D(
+		const GKSSubcellMask2D* mask,
+		const GKSFRMesh2D& old_mesh,
+		GKSFRMesh2D& new_mesh)
+	{
+		if (mask == nullptr || !mask->enabled)
+		{
+			return;
+		}
+		for (int i = 0; i < new_mesh.cells_x; ++i)
+		{
+			for (int j = 0; j < new_mesh.cells_y; ++j)
+			{
+				if (MaskCellActive2D(mask, new_mesh, i, j))
+				{
+					continue;
+				}
+				const int e = GKSFR_CellIndex2D(new_mesh, i, j);
+				new_mesh.cell[e] = old_mesh.cell[e];
+			}
+		}
+	}
+
+	void ApplyMaskToAlpha2D(
+		const GKSSubcellMask2D* mask,
+		const GKSFRMesh2D& mesh,
+		std::vector<double>& alpha)
+	{
+		if (mask == nullptr || !mask->enabled)
+		{
+			return;
+		}
+		for (int i = 0; i < mesh.cells_x; ++i)
+		{
+			for (int j = 0; j < mesh.cells_y; ++j)
+			{
+				const int e = GKSFR_CellIndex2D(mesh, i, j);
+				if (!MaskCellActive2D(mask, mesh, i, j))
+				{
+					alpha[e] = 1.0;
+					continue;
+				}
+				const bool near_hole =
+					(i > 0 && !MaskCellActive2D(mask, mesh, i - 1, j)) ||
+					(i + 1 < mesh.cells_x && !MaskCellActive2D(mask, mesh, i + 1, j)) ||
+					(j > 0 && !MaskCellActive2D(mask, mesh, i, j - 1)) ||
+					(j + 1 < mesh.cells_y && !MaskCellActive2D(mask, mesh, i, j + 1));
+				if (near_hole)
+				{
+					alpha[e] = 1.0;
+				}
+			}
+		}
+	}
+
 	bool CheckPhysicalState2D(const GKSFRMesh2D& mesh, int& bad_e, int& bad_i, int& bad_j)
 	{
 		for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
@@ -403,6 +595,109 @@ namespace
 				}
 			}
 		}
+	}
+
+	void WriteCellCenterDensityTecplot2DMasked(
+		const GKSFRMesh2D& mesh,
+		const GKSSubcellMask2D& mask,
+		const char* path)
+	{
+		std::ofstream out(path);
+		out << std::setprecision(16);
+		out << "variables = x,y,density,u,v,pressure,active\n";
+		out << "zone i = " << mesh.cells_x << ", j = " << mesh.cells_y << ", F=POINT\n";
+		for (int j = 0; j < mesh.cells_y; ++j)
+		{
+			for (int i = 0; i < mesh.cells_x; ++i)
+			{
+				const bool active = MaskCellActive2D(&mask, mesh, i, j);
+				if (!active)
+				{
+					out << GKSFR_CellCenterX2D(mesh, i) << " "
+						<< GKSFR_CellCenterY2D(mesh, j) << " "
+						<< 0.0 << " " << 0.0 << " " << 0.0 << " " << 0.0 << " " << 0 << "\n";
+					continue;
+				}
+				GKSFRCell2D cell = mesh.cell[GKSFR_CellIndex2D(mesh, i, j)];
+				GKSFR_ComputeCellCenterData2D(cell, mesh.dx, mesh.dy);
+				double prim[4];
+				double convar[4];
+				for (int m = 0; m < 4; ++m)
+				{
+					convar[m] = cell.Qc[m];
+				}
+				Convar_to_primvar_2D(prim, convar);
+				out << GKSFR_CellCenterX2D(mesh, i) << " "
+					<< GKSFR_CellCenterY2D(mesh, j) << " "
+					<< prim[0] << " "
+					<< prim[1] << " "
+					<< prim[2] << " "
+					<< prim[3] << " "
+					<< 1 << "\n";
+			}
+		}
+	}
+
+	void InitializeDetonationShockDiffraction2D(GKSFRMesh2D& mesh)
+	{
+		for (int j = 0; j < mesh.cells_y; ++j)
+		{
+			for (int i = 0; i < mesh.cells_x; ++i)
+			{
+				GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, i, j)];
+				for (int q = 0; q < 3; ++q)
+				{
+					for (int p = 0; p < 3; ++p)
+					{
+						const double x = GKSFR_SolutionPointX2D(mesh, i, p);
+						const double y = GKSFR_SolutionPointY2D(mesh, j, q);
+						double prim[4];
+						GKSFR_DetonationShockPrimitive2D(prim, x, y, 0.0);
+						Primvar_to_convar_2D(cell.Q[p][q], prim);
+					}
+				}
+			}
+		}
+	}
+
+	bool CheckPhysicalState2DMasked(
+		const GKSFRMesh2D& mesh,
+		const GKSSubcellMask2D& mask,
+		int& bad_e,
+		int& bad_i,
+		int& bad_j)
+	{
+		for (int i_cell = 0; i_cell < mesh.cells_x; ++i_cell)
+		{
+			for (int j_cell = 0; j_cell < mesh.cells_y; ++j_cell)
+			{
+				if (!MaskCellActive2D(&mask, mesh, i_cell, j_cell))
+				{
+					continue;
+				}
+				const int e = GKSFR_CellIndex2D(mesh, i_cell, j_cell);
+				for (int i = 0; i < 3; ++i)
+				{
+					for (int j = 0; j < 3; ++j)
+					{
+						const double* q = mesh.cell[e].Q[i][j];
+						if (!std::isfinite(q[0]) || !std::isfinite(q[1]) ||
+							!std::isfinite(q[2]) || !std::isfinite(q[3]) ||
+							q[0] <= 0.0 || Pressure2DLocal(q) <= 0.0)
+						{
+							bad_e = e;
+							bad_i = i;
+							bad_j = j;
+							return false;
+						}
+					}
+				}
+			}
+		}
+		bad_e = -1;
+		bad_i = -1;
+		bad_j = -1;
+		return true;
 	}
 	
 	void PrintBadStateSummary(
@@ -1062,6 +1357,236 @@ void GKSSubcellAdvanceOneStep2D(
 	mesh = mixed;
 }
 
+void GKSSubcellBuildRectangularCutoutMask2D(
+	const GKSFRMesh2D& mesh,
+	double x_min,
+	double x_max,
+	double y_min,
+	double y_max,
+	GKSSubcellMask2D& mask)
+{
+	mask.enabled = true;
+	mask.cells_x = mesh.cells_x;
+	mask.cells_y = mesh.cells_y;
+	mask.active.assign(mesh.cells_x * mesh.cells_y, 1);
+	for (int i = 0; i < mesh.cells_x; ++i)
+	{
+		for (int j = 0; j < mesh.cells_y; ++j)
+		{
+			const double x = GKSFR_CellCenterX2D(mesh, i);
+			const double y = GKSFR_CellCenterY2D(mesh, j);
+			if (x >= x_min && x <= x_max && y >= y_min && y <= y_max)
+			{
+				mask.active[GKSFR_CellIndex2D(mesh, i, j)] = 0;
+			}
+		}
+	}
+}
+
+void GKSSubcellAdvanceOneStep2DMasked(
+	GKSFRMesh2D& mesh,
+	double dt,
+	GKSFRBoundary2D boundary,
+	const GKSSubcellMask2D& mask,
+	const GKSSubcellFrameworkConfig2D& config,
+	GKSSubcellFrameworkDiag2D& diag)
+{
+	if (!mask.enabled)
+	{
+		GKSSubcellAdvanceOneStep2D(mesh, dt, boundary, config, diag);
+		return;
+	}
+
+	low_order_type = config.low_mode;
+	GKSSmoothIndicatorAllCells2D(mesh, config.smooth_param, diag.alpha_raw, diag.alpha_final);
+	if (config.blend_mode == gks_subcell2d_pure_high)
+	{
+		std::fill(diag.alpha_final.begin(), diag.alpha_final.end(), 0.0);
+	}
+	else if (config.blend_mode == gks_subcell2d_pure_low)
+	{
+		std::fill(diag.alpha_final.begin(), diag.alpha_final.end(), 1.0);
+	}
+	ApplyMaskToAlpha2D(&mask, mesh, diag.alpha_final);
+
+	std::vector<GKSFRFaceFlux2D> high_x_face_fluxes;
+	std::vector<GKSFRFaceFlux2D> high_y_face_fluxes;
+	GKSFRAdapterComputeHighFaceFluxes2D(mesh, dt, boundary, high_x_face_fluxes, high_y_face_fluxes);
+
+	GKSSubcellBranch2D low_branch;
+	GKSSubcellInitializeFromCurrentDofs2D(mesh, low_branch);
+	GKSSubcellComputeInternalFluxes2D(low_branch, dt, config.low_mode);
+
+	GKSSubcellBranch2D low_branch_kfvs_safe = low_branch;
+	if (config.low_mode == MUSCL_HANCOCK_2d)
+	{
+		GKSSubcellComputeInternalFluxes2D(low_branch_kfvs_safe, dt, KFVS1);
+	}
+	OverrideMaskedWallFaceFluxes2D(&mask, low_branch_kfvs_safe, dt, high_x_face_fluxes, high_y_face_fluxes);
+
+	std::vector<GKSFRFaceFlux2D> low_x_face_fluxes;
+	std::vector<GKSFRFaceFlux2D> low_y_face_fluxes;
+	GKSSubcellComputeLowFaceFluxes2D(low_branch_kfvs_safe, dt, boundary, low_x_face_fluxes, low_y_face_fluxes);
+	OverrideMaskedWallFaceFluxes2D(&mask, low_branch_kfvs_safe, dt, low_x_face_fluxes, low_y_face_fluxes);
+
+	std::vector<GKSFRFaceFlux2D> final_x_face_fluxes;
+	std::vector<GKSFRFaceFlux2D> final_y_face_fluxes;
+	if (config.blend_mode == gks_subcell2d_pure_high)
+	{
+		final_x_face_fluxes = high_x_face_fluxes;
+		final_y_face_fluxes = high_y_face_fluxes;
+		diag.flux_diag = GKSFluxLimiterDiag2D();
+	}
+	else if (config.blend_mode == gks_subcell2d_pure_low)
+	{
+		final_x_face_fluxes = low_x_face_fluxes;
+		final_y_face_fluxes = low_y_face_fluxes;
+		diag.flux_diag = GKSFluxLimiterDiag2D();
+	}
+	else if (config.use_flux_limiter)
+	{
+		GKSFluxLimiterApply2D(
+			low_branch_kfvs_safe,
+			diag.alpha_final,
+			high_x_face_fluxes,
+			high_y_face_fluxes,
+			low_x_face_fluxes,
+			low_y_face_fluxes,
+			dt,
+			boundary,
+			config.flux_param,
+			final_x_face_fluxes,
+			final_y_face_fluxes,
+			diag.flux_diag);
+	}
+	else
+	{
+		MixedFaceFluxWithoutLimiter2D(
+			mesh,
+			diag.alpha_final,
+			high_x_face_fluxes,
+			high_y_face_fluxes,
+			low_x_face_fluxes,
+			low_y_face_fluxes,
+			final_x_face_fluxes,
+			final_y_face_fluxes,
+			diag.flux_diag);
+	}
+	OverrideMaskedWallFaceFluxes2D(&mask, low_branch_kfvs_safe, dt, final_x_face_fluxes, final_y_face_fluxes);
+
+	GKSFRMesh2D high_new;
+	GKSFRAdapterAdvanceWithFaceFluxes2D(mesh, dt, final_x_face_fluxes, final_y_face_fluxes, high_new);
+	RestoreInactiveCells2D(&mask, mesh, high_new);
+
+	GKSSubcellBranch2D low_safe = low_branch_kfvs_safe;
+	GKSSubcellAdvanceWithFaceFluxes2D(low_safe, final_x_face_fluxes, final_y_face_fluxes, dt);
+
+	GKSSubcellBranch2D low_candidate = low_branch;
+	if (config.low_mode == MUSCL_HANCOCK_2d)
+	{
+		GKSSubcellComputeElementResiduals2D(low_candidate);
+		GKSSubcellAddFaceResiduals2D(low_candidate, final_x_face_fluxes, final_y_face_fluxes);
+		GKSSubcellFallbackBadMUSCLUpdates2D(low_candidate, low_safe, dt);
+		GKSSubcellUpdateLowOrderDofs2D(low_candidate, dt);
+	}
+	else
+	{
+		low_candidate = low_safe;
+	}
+	diag.muscl_stats = low_candidate.muscl_stats;
+
+	GKSFRMesh2D mixed = mesh;
+	diag.max_alpha = 0.0;
+	diag.troubled_cells = 0;
+	for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
+	{
+		const int i_cell = e / mesh.cells_y;
+		const int j_cell = e - i_cell * mesh.cells_y;
+		if (!MaskCellActive2D(&mask, mesh, i_cell, j_cell))
+		{
+			mixed.cell[e] = mesh.cell[e];
+			continue;
+		}
+		const double alpha = diag.alpha_final[e];
+		diag.max_alpha = std::max(diag.max_alpha, alpha);
+		if (alpha > 0.0)
+		{
+			diag.troubled_cells++;
+		}
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				for (int m = 0; m < 4; ++m)
+				{
+					if (alpha <= 1.0e-14)
+					{
+						mixed.cell[e].Q[i][j][m] = high_new.cell[e].Q[i][j][m];
+					}
+					else if (alpha >= 1.0 - 1.0e-14)
+					{
+						mixed.cell[e].Q[i][j][m] = low_candidate.cell[e].low_dof_new[i][j][m];
+					}
+					else if (!std::isfinite(high_new.cell[e].Q[i][j][m]) &&
+						std::isfinite(low_candidate.cell[e].low_dof_new[i][j][m]))
+					{
+						mixed.cell[e].Q[i][j][m] = low_candidate.cell[e].low_dof_new[i][j][m];
+					}
+					else
+					{
+						mixed.cell[e].Q[i][j][m] =
+							(1.0 - alpha) * high_new.cell[e].Q[i][j][m]
+							+ alpha * low_candidate.cell[e].low_dof_new[i][j][m];
+					}
+				}
+			}
+		}
+	}
+
+	if (config.use_scaling_limiter)
+	{
+		std::vector<GKSCellAverage2D> safe_average(mesh.cells_x * mesh.cells_y);
+		for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
+		{
+			for (int m = 0; m < 4; ++m)
+			{
+				safe_average[e].U[m] = low_safe.cell[e].cell_avg_new[m];
+			}
+		}
+		GKSScalingLimiterApply2D(mixed, safe_average, config.scaling_param, diag.scaling_diag);
+	}
+	else
+	{
+		diag.scaling_diag.theta_rho.assign(mesh.cells_x * mesh.cells_y, 1.0);
+		diag.scaling_diag.theta_p.assign(mesh.cells_x * mesh.cells_y, 1.0);
+		diag.scaling_diag.theta.assign(mesh.cells_x * mesh.cells_y, 1.0);
+		diag.scaling_diag.limited_cells = 0;
+	}
+	RestoreInactiveCells2D(&mask, mesh, mixed);
+
+	diag.min_rho = 1.0e300;
+	diag.min_p = 1.0e300;
+	for (int e = 0; e < mixed.cells_x * mixed.cells_y; ++e)
+	{
+		const int i_cell = e / mixed.cells_y;
+		const int j_cell = e - i_cell * mixed.cells_y;
+		if (!MaskCellActive2D(&mask, mixed, i_cell, j_cell))
+		{
+			continue;
+		}
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				const double* q = mixed.cell[e].Q[i][j];
+				diag.min_rho = std::min(diag.min_rho, q[0]);
+				diag.min_p = std::min(diag.min_p, Pressure2DLocal(q));
+			}
+		}
+	}
+	mesh = mixed;
+}
+
 void accuracy_sinwave_1d_gks_subcell()
 {
 	Ensure_Result_Directory();
@@ -1273,17 +1798,17 @@ void double_mach_reflection_2d_gks_subcell()
 	Configure_GKS_Subcell_2D(0.1, 1.0);
 	GKSSubcellFrameworkConfig2D config;
 	config.blend_mode = gks_subcell2d_hybrid;
-	config.low_mode = KFVS1;
+	config.low_mode = MUSCL_HANCOCK_2d;
 	config.use_flux_limiter = true;
 	config.use_scaling_limiter = true;
 	config.flux_param.kx = 0.5;
 	config.flux_param.ky = 0.5;
 
 	GKSFRMesh2D mesh;
-	GKSFR_ResizeUniformMesh2D(mesh, 240, 60, 0.0, 4.0, 0.0, 1.0);
+	GKSFR_ResizeUniformMesh2D(mesh, 600, 150, 0.0, 4.0, 0.0, 1.0);
 	ICforDoubleMachReflection2D(mesh);
 
-	const double CFL = 0.2;
+	const double CFL = 0.2;  
 	const double tstop = 0.2;
 	double t = 0.0;
 	int step = 0;
@@ -1320,4 +1845,106 @@ void double_mach_reflection_2d_gks_subcell()
 	std::cout << "number of scaling-limited cells=" << diag.scaling_diag.limited_cells << std::endl;
 	WriteCellCenterDensityTecplot2D(mesh, StepTaggedPath("double_mach_2d", step, ".plt").c_str());
 	WriteFRSolutionPointDensityTecplot2D(mesh, StepTaggedPath("double_mach_2d_frpoints", step, ".plt").c_str());
+}
+
+void detonation_shock_diffraction_2d_gks_subcell()
+{
+	Ensure_Result_Directory();
+	Configure_GKS_Subcell_2D(0.1, 1.0);
+	GKSSubcellFrameworkConfig2D config;
+	config.blend_mode = gks_subcell2d_hybrid;
+	config.low_mode = KFVS1;
+	config.use_flux_limiter = true;
+	config.use_scaling_limiter = true;
+	config.flux_param.kx = 0.5;
+	config.flux_param.ky = 0.5;
+
+	const bool use_rectangular_cutout_domain = true;
+	const int cells_per_unit = 200;
+	GKSFRMesh2D mesh;
+	GKSFR_ResizeUniformMesh2D(
+		mesh,
+		2 * cells_per_unit,
+		2 * cells_per_unit,
+		0.0,
+		2.0,
+		0.0,
+		2.0);
+	InitializeDetonationShockDiffraction2D(mesh);
+
+	GKSSubcellMask2D mask;
+	if (use_rectangular_cutout_domain)
+	{
+		GKSSubcellBuildRectangularCutoutMask2D(mesh, 0.0, 0.5, 0.0, 1.0, mask);
+	}
+
+	const double CFL = 0.1;
+	const double tstop = 0.01;
+	double t = 0.0;
+	int step = 0;
+	GKSSubcellFrameworkDiag2D diag;
+	while (t < tstop - 1.0e-14)
+	{
+		const double dt = GetTimeStep2D(mesh, CFL, t, tstop);
+		std::cout << "step=" << step << " dt=" << dt << " t=" << t << std::endl;
+		GKSFR_SetBoundaryTime2D(t + 0.5 * dt);
+		if (use_rectangular_cutout_domain)
+		{
+			GKSSubcellAdvanceOneStep2DMasked(
+				mesh,
+				dt,
+				gksfr2d_detonation_diffraction,
+				mask,
+				config,
+				diag);
+		}
+		else
+		{
+			GKSSubcellAdvanceOneStep2D(
+				mesh,
+				dt,
+				gksfr2d_detonation_diffraction,
+				config,
+				diag);
+		}
+		t += dt;
+		++step;
+
+		int bad_e = -1, bad_i = -1, bad_j = -1;
+		const bool ok = use_rectangular_cutout_domain
+			? CheckPhysicalState2DMasked(mesh, mask, bad_e, bad_i, bad_j)
+			: CheckPhysicalState2D(mesh, bad_e, bad_i, bad_j);
+		if (!ok)
+		{
+			std::cout << "Detonation Shock Diffraction stopped at step=" << step
+				<< " cell=" << bad_e
+				<< " point=(" << bad_i << "," << bad_j << ")" << std::endl;
+			PrintBadStateSummary2D(mesh, bad_e, bad_i, bad_j);
+			break;
+		}
+	}
+
+	std::cout << "Detonation Shock Diffraction limiter statistics" << std::endl;
+	std::cout << "min rho=" << diag.min_rho << std::endl;
+	std::cout << "min p=" << diag.min_p << std::endl;
+	std::cout << "max alpha=" << diag.max_alpha << std::endl;
+	std::cout << "number of troubled cells alpha > 0=" << diag.troubled_cells << std::endl;
+	std::cout << "number of flux-limited faces x/y="
+		<< diag.flux_diag.limited_faces_x << "/" << diag.flux_diag.limited_faces_y << std::endl;
+	std::cout << "min theta_F=" << diag.flux_diag.min_theta_x << std::endl;
+	std::cout << "min theta_G=" << diag.flux_diag.min_theta_y << std::endl;
+	std::cout << "number of scaling-limited cells=" << diag.scaling_diag.limited_cells << std::endl;
+	if (use_rectangular_cutout_domain)
+	{
+		WriteCellCenterDensityTecplot2DMasked(
+			mesh,
+			mask,
+			StepTaggedPath("detonation_diffraction_2d_masked", step, ".plt").c_str());
+	}
+	else
+	{
+		WriteCellCenterDensityTecplot2D(
+			mesh,
+			StepTaggedPath("detonation_diffraction_2d_full", step, ".plt").c_str());
+	}
 }

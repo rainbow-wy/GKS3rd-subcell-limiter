@@ -77,6 +77,16 @@ struct GKSSubcellFrameworkDiag2D
 	GKSSubcellFrameworkDiag2D();
 };
 
+struct GKSSubcellMask2D
+{
+	bool enabled;
+	int cells_x;
+	int cells_y;
+	std::vector<int> active;
+
+	GKSSubcellMask2D();
+};
+
 void GKSSubcellAdvanceOneStep1D(
 	GKSFRMesh1D& mesh,
 	double dt,
@@ -91,8 +101,25 @@ void GKSSubcellAdvanceOneStep2D(
 	const GKSSubcellFrameworkConfig2D& config,
 	GKSSubcellFrameworkDiag2D& diag);
 
+void GKSSubcellBuildRectangularCutoutMask2D(
+	const GKSFRMesh2D& mesh,
+	double x_min,
+	double x_max,
+	double y_min,
+	double y_max,
+	GKSSubcellMask2D& mask);
+
+void GKSSubcellAdvanceOneStep2DMasked(
+	GKSFRMesh2D& mesh,
+	double dt,
+	GKSFRBoundary2D boundary,
+	const GKSSubcellMask2D& mask,
+	const GKSSubcellFrameworkConfig2D& config,
+	GKSSubcellFrameworkDiag2D& diag);
+
 void accuracy_sinwave_1d_gks_subcell();
 void riemann_problem_1d_gks_subcell();
 void accuracy_sinwave_2d_gks_subcell();
 void riemann_problem_2d_gks_subcell();
 void double_mach_reflection_2d_gks_subcell();
+void detonation_shock_diffraction_2d_gks_subcell();

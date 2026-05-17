@@ -1264,6 +1264,24 @@ void GKSFR_DoubleMachPrimitive2D(double prim[4], double x, double y, double t)
 	}
 }
 
+void GKSFR_DetonationShockPrimitive2D(double prim[4], double x, double y, double)
+{
+	if (x <= 0.5)
+	{
+		prim[0] = 5.9970;
+		prim[1] = 98.5914;
+		prim[2] = 0.0;
+		prim[3] = 11666.5;
+	}
+	else
+	{
+		prim[0] = 1.0;
+		prim[1] = 0.0;
+		prim[2] = 0.0;
+		prim[3] = 1.0;
+	}
+}
+
 void GKSFR_BoundaryGhostState2D(
 	double ghost_Q[4],
 	const double inner_Q[4],
@@ -1286,6 +1304,29 @@ void GKSFR_BoundaryGhostState2D(
 			return;
 		}
 		if (side == gksfr2d_bottom_side && x >= 1.0 / 6.0)
+		{
+			double prim[4];
+			double inner_copy[4];
+			Copy4(inner_copy, inner_Q);
+			Convar_to_primvar_2D(prim, inner_copy);
+			prim[2] = -prim[2];
+			Primvar_to_convar_2D(ghost_Q, prim);
+			return;
+		}
+		Copy4(ghost_Q, inner_Q);
+		return;
+	}
+
+	if (boundary == gksfr2d_detonation_diffraction)
+	{
+		if (side == gksfr2d_left_side)
+		{
+			double prim[4];
+			GKSFR_DetonationShockPrimitive2D(prim, x, y, t);
+			Primvar_to_convar_2D(ghost_Q, prim);
+			return;
+		}
+		if (side == gksfr2d_top_side || side == gksfr2d_bottom_side)
 		{
 			double prim[4];
 			double inner_copy[4];

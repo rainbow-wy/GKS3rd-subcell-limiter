@@ -107,7 +107,8 @@ enum GKSFRBoundary2D
 	gksfr2d_periodic,
 	gksfr2d_transmissive,
 	gksfr2d_reflective,
-	gksfr2d_double_mach
+	gksfr2d_double_mach,
+	gksfr2d_detonation_diffraction
 };
 
 enum GKSFRBoundarySide2D
@@ -201,6 +202,7 @@ double GKSFR_SolutionPointY2D(const GKSFRMesh2D& mesh, int j, int q);
 void GKSFR_SetBoundaryTime2D(double t);
 double GKSFR_GetBoundaryTime2D();
 void GKSFR_DoubleMachPrimitive2D(double prim[4], double x, double y, double t);
+void GKSFR_DetonationShockPrimitive2D(double prim[4], double x, double y, double t);
 void GKSFR_BoundaryGhostState2D(
 	double ghost_Q[4],
 	const double inner_Q[4],

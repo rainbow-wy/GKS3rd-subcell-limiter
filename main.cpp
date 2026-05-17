@@ -56,7 +56,8 @@ int main()
     //accuracy_sinwave_2d(); //二维精度测试，通过二维周期线性的正弦波传播算例，测试格式在光滑（smooth flow）无粘工况下的精度
 	//riemann_problem_2d();  //二维黎曼问题测试，测试格式对于多维可压缩间断问题的鲁棒性和分辨率
 	//riemann_problem_2d_gks_subcell();//二维子单元限制器Riemann问题测试
-	double_mach_reflection_2d_gks_subcell();//二维子单元限制器双马赫反射问题测试
+	//double_mach_reflection_2d_gks_subcell();//二维子单元限制器双马赫反射问题测试
+	detonation_shock_diffraction_2d_gks_subcell();//二维缺失矩形区域 Detonation Shock Diffraction 测试
 
 
 	//boundary_layer();      //二维边界层问题测试，测试格式对于光滑（smooth flow）粘性边界的分辨率，非均匀直角网格
