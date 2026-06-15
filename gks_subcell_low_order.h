@@ -55,6 +55,8 @@ struct GKSSubcellCell1D
 struct GKSSubcellBranch1D
 {
 	GKSSubcellGeom1D geom;
+	double x_left;
+	double dx;
 	std::vector<GKSSubcellCell1D> cell;
 	GKSSubcellMUSCLHancockStats1D muscl_stats;
 };

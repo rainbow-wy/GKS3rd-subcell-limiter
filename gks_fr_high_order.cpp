@@ -173,6 +173,40 @@ namespace
 		trace.convar[1] = -trace.convar[1];
 	}
 
+	void FillShuOsherBoundaryTrace(Point1d& trace, bool left_boundary, double x)
+	{
+		trace.x = x;
+		for (int m = 0; m < 3; ++m)
+		{
+			trace.der1[m] = 0.0;
+			trace.der2[m] = 0.0;
+		}
+
+		if (left_boundary)
+		{
+			const double rho = 3.857143;
+			const double u = 2.629369;
+			const double p = 10.333333;
+			trace.convar[0] = rho;
+			trace.convar[1] = rho * u;
+			trace.convar[2] = p / (Gamma - 1.0) + 0.5 * rho * u * u;
+		}
+		else
+		{
+			const double phase = 5.0 * x;
+			trace.convar[0] = 1.0 + 0.2 * std::sin(phase);
+			trace.convar[1] = 0.0;
+			trace.convar[2] = 1.0 / (Gamma - 1.0);
+			trace.der1[0] = std::cos(phase);
+			trace.der2[0] = -5.0 * std::sin(phase);
+		}
+
+		for (int m = 0; m < 3; ++m)
+		{
+			trace.convar_old[m] = trace.convar[m];
+		}
+	}
+
 	void BuildCenterTraceFromFaces(Interface1d& interface)
 	{
 		// Wrapper for the existing one-stage 3rd-order interface GKS:
@@ -337,6 +371,46 @@ namespace
 		interface.left = exterior_trace;
 		interface.right = interior_trace;
 		interface.center = interior_trace;
+
+		const GKS1d_type old_solver = gks1dsolver;
+		gks1dsolver = gks3rd;
+		GKS(flux, interface, dt);
+		gks1dsolver = old_solver;
+
+		for (int m = 0; m < 3; ++m)
+		{
+			common_flux[m] = flux.f[m] / dt;
+		}
+	}
+
+	void ComputeShuOsherBoundaryCommonFlux(
+		const GKSFRCell1D& cell,
+		double h,
+		double dt,
+		bool left_boundary,
+		double boundary_x,
+		double common_flux[3])
+	{
+		Interface1d interface;
+		Flux1d flux;
+		Zero3(flux.f);
+
+		Point1d interior_trace;
+		FillFaceTrace(interior_trace, cell, h, !left_boundary);
+
+		Point1d boundary_trace;
+		FillShuOsherBoundaryTrace(boundary_trace, left_boundary, boundary_x);
+		if (left_boundary)
+		{
+			interface.left = boundary_trace;
+			interface.right = interior_trace;
+		}
+		else
+		{
+			interface.left = interior_trace;
+			interface.right = boundary_trace;
+		}
+		BuildCenterTraceFromFaces(interface);
 
 		const GKS1d_type old_solver = gks1dsolver;
 		gks1dsolver = gks3rd;
@@ -1046,6 +1120,11 @@ void GKSFR_ComputeCommonInterfaceFluxes(
 		ComputeReflectiveBoundaryCommonFlux(
 			mesh.cell[0], mesh.dx, dt, true, face_fluxes[0].F);
 	}
+	else if (boundary == gksfr_shu_osher)
+	{
+		ComputeShuOsherBoundaryCommonFlux(
+			mesh.cell[0], mesh.dx, dt, true, mesh.x_left, face_fluxes[0].F);
+	}
 	else if (boundary == gksfr_transmissive_strict)
 	{
 		ComputeStrictTransmissiveBoundaryCommonFlux(
@@ -1064,6 +1143,11 @@ void GKSFR_ComputeCommonInterfaceFluxes(
 	{
 		ComputeReflectiveBoundaryCommonFlux(
 			mesh.cell[mesh.cells - 1], mesh.dx, dt, false, face_fluxes[mesh.cells].F);
+	}
+	else if (boundary == gksfr_shu_osher)
+	{
+		ComputeShuOsherBoundaryCommonFlux(
+			mesh.cell[mesh.cells - 1], mesh.dx, dt, false, mesh.x_right, face_fluxes[mesh.cells].F);
 	}
 	else if (boundary == gksfr_transmissive_strict)
 	{
@@ -1282,6 +1366,25 @@ void GKSFR_DetonationShockPrimitive2D(double prim[4], double x, double y, double
 	}
 }
 
+void GKSFR_AstrophysicalJetPrimitive2D(double prim[4], double, double y, double)
+{
+	const bool in_jet_slot = std::fabs(y) <= 0.05;
+	if (in_jet_slot)
+	{
+		prim[0] = 5.0;
+		prim[1] = 800.0;
+		prim[2] = 0.0;
+		prim[3] = 0.4127;
+	}
+	else
+	{
+		prim[0] = 0.5;
+		prim[1] = 0.0;
+		prim[2] = 0.0;
+		prim[3] = 0.4127;
+	}
+}
+
 void GKSFR_BoundaryGhostState2D(
 	double ghost_Q[4],
 	const double inner_Q[4],
@@ -1333,6 +1436,19 @@ void GKSFR_BoundaryGhostState2D(
 			Copy4(inner_copy, inner_Q);
 			Convar_to_primvar_2D(prim, inner_copy);
 			prim[2] = -prim[2];
+			Primvar_to_convar_2D(ghost_Q, prim);
+			return;
+		}
+		Copy4(ghost_Q, inner_Q);
+		return;
+	}
+
+	if (boundary == gksfr2d_astrophysical_jet)
+	{
+		if (side == gksfr2d_left_side)
+		{
+			double prim[4];
+			GKSFR_AstrophysicalJetPrimitive2D(prim, x, y, t);
 			Primvar_to_convar_2D(ghost_Q, prim);
 			return;
 		}

@@ -10,6 +10,7 @@ enum GKSFRBoundary1D
 	gksfr_periodic,
 	gksfr_free,
 	gksfr_transmissive_strict,
+	gksfr_shu_osher,
 	gksfr_reflective
 };
 
@@ -108,7 +109,8 @@ enum GKSFRBoundary2D
 	gksfr2d_transmissive,
 	gksfr2d_reflective,
 	gksfr2d_double_mach,
-	gksfr2d_detonation_diffraction
+	gksfr2d_detonation_diffraction,
+	gksfr2d_astrophysical_jet
 };
 
 enum GKSFRBoundarySide2D
@@ -203,6 +205,7 @@ void GKSFR_SetBoundaryTime2D(double t);
 double GKSFR_GetBoundaryTime2D();
 void GKSFR_DoubleMachPrimitive2D(double prim[4], double x, double y, double t);
 void GKSFR_DetonationShockPrimitive2D(double prim[4], double x, double y, double t);
+void GKSFR_AstrophysicalJetPrimitive2D(double prim[4], double x, double y, double t);
 void GKSFR_BoundaryGhostState2D(
 	double ghost_Q[4],
 	const double inner_Q[4],

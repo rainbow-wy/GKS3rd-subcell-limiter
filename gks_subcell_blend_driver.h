@@ -123,3 +123,4 @@ void accuracy_sinwave_2d_gks_subcell();
 void riemann_problem_2d_gks_subcell();
 void double_mach_reflection_2d_gks_subcell();
 void detonation_shock_diffraction_2d_gks_subcell();
+void astrophysical_jet_2d_gks_subcell();

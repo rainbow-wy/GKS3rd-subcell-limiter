@@ -3,7 +3,10 @@
 #include "gks_kfvs_adapter.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
 #include <limits>
 
 GKSSubcellLowOrderType low_order_type = KFVS1;
@@ -40,6 +43,24 @@ namespace
 		out_Q[0] = in_Q[0];
 		out_Q[1] = -in_Q[1];
 		out_Q[2] = in_Q[2];
+	}
+
+	void ShuOsherBoundaryState1D(double Q[3], bool left_boundary, double x)
+	{
+		double W[3];
+		if (left_boundary)
+		{
+			W[0] = 3.857143;
+			W[1] = 2.629369;
+			W[2] = 10.333333;
+		}
+		else
+		{
+			W[0] = 1.0 + 0.2 * std::sin(5.0 * x);
+			W[1] = 0.0;
+			W[2] = 1.0;
+		}
+		Primvar_to_convar_1D(Q, W);
 	}
 
 	void ZeroState(double out[3])
@@ -348,6 +369,188 @@ namespace
 	{
 		return std::isfinite(flux[0]) && std::isfinite(flux[1]) &&
 			std::isfinite(flux[2]) && std::isfinite(flux[3]);
+	}
+
+	bool StateFinite2DLocal(const double Q[4])
+	{
+		return std::isfinite(Q[0]) && std::isfinite(Q[1]) &&
+			std::isfinite(Q[2]) && std::isfinite(Q[3]);
+	}
+
+	bool StateBad2DLocal(const double Q[4])
+	{
+		const double p = PressureFromConservative2D(Q);
+		return !StateFinite2DLocal(Q) || !std::isfinite(p) || Q[0] <= 0.0 || p <= 0.0;
+	}
+
+	int TraceCell2DLocal()
+	{
+		const char* text = std::getenv("JET_TRACE_CELL");
+		return text ? std::atoi(text) : -1;
+	}
+
+	int TraceRadius2DLocal()
+	{
+		const char* text = std::getenv("JET_TRACE_RADIUS");
+		return text ? std::max(0, std::atoi(text)) : 2;
+	}
+
+	bool TraceFaceNeighborhood2D(const GKSSubcellBranch2D& branch, int face_i, int j, bool x_face)
+	{
+		const int target = TraceCell2DLocal();
+		if (target < 0 || branch.cells_y <= 0)
+		{
+			return false;
+		}
+		const int ti = target / branch.cells_y;
+		const int tj = target % branch.cells_y;
+		const int r = TraceRadius2DLocal();
+		if (x_face)
+		{
+			return std::abs(face_i - ti) <= r + 1 && std::abs(j - tj) <= r;
+		}
+		return std::abs(face_i - ti) <= r && std::abs(j - tj) <= r + 1;
+	}
+
+	void PrintState2DLocal(const char* label, const double Q[4])
+	{
+		const double rho = Q[0];
+		const double u = (std::isfinite(rho) && std::fabs(rho) > 0.0) ? Q[1] / rho : 0.0;
+		const double v = (std::isfinite(rho) && std::fabs(rho) > 0.0) ? Q[2] / rho : 0.0;
+		std::cout << label
+			<< " rho=" << Q[0] << " rhoU=" << Q[1] << " rhoV=" << Q[2] << " rhoE=" << Q[3]
+			<< " u=" << u << " v=" << v << " p=" << PressureFromConservative2D(Q);
+	}
+
+	void PrintEnergyChain2DLocal(const char* label, const double Q[4])
+	{
+		const double rho = Q[0];
+		const double rhoU = Q[1];
+		const double rhoV = Q[2];
+		const double rhoE = Q[3];
+		const double u = rhoU / rho;
+		const double v = rhoV / rho;
+		const double kinetic_mom = 0.5 * (rhoU * rhoU + rhoV * rhoV) / rho;
+		const double kinetic_uv = 0.5 * rho * (u * u + v * v);
+		const double ie_mom = rhoE - kinetic_mom;
+		const double ie_uv = rhoE - kinetic_uv;
+		const double p_mom = (Gamma - 1.0) * ie_mom;
+		const double p_uv = (Gamma - 1.0) * ie_uv;
+		const double lambda_mom = (K + 2.0) * 0.25 * rho / ie_mom;
+		const double lambda_uv_old = Lambda(rho, u, v, rhoE);
+		std::cout << std::setprecision(17)
+			<< "  " << label
+			<< " rho=" << rho << " rhoU=" << rhoU << " rhoV=" << rhoV << " rhoE=" << rhoE
+			<< " u=" << u << " v=" << v
+			<< " kinetic_mom=" << kinetic_mom
+			<< " kinetic_uv=" << kinetic_uv
+			<< " internal_mom=" << ie_mom
+			<< " internal_uv=" << ie_uv
+			<< " rel_internal_mom=" << ie_mom / rhoE
+			<< " rel_internal_uv=" << ie_uv / rhoE
+			<< " p_mom=" << p_mom
+			<< " p_uv=" << p_uv
+			<< " p_diag=" << PressureFromConservative2D(Q)
+			<< " lambda_mom=" << lambda_mom
+			<< " lambda_uv_old=" << lambda_uv_old
+			<< std::endl;
+	}
+
+	void DirectKFVSFlux2D_X(const double left_Q[4], const double right_Q[4], double flux[4])
+	{
+		const double rho_l = left_Q[0];
+		const double rho_r = right_Q[0];
+		const double u_l = left_Q[1] / rho_l;
+		const double v_l = left_Q[2] / rho_l;
+		const double u_r = right_Q[1] / rho_r;
+		const double v_r = right_Q[2] / rho_r;
+		const double lambda_l = (K + 2.0) * 0.25 * rho_l /
+			(left_Q[3] - 0.5 * (left_Q[1] * left_Q[1] + left_Q[2] * left_Q[2]) / rho_l);
+		const double lambda_r = (K + 2.0) * 0.25 * rho_r /
+			(right_Q[3] - 0.5 * (right_Q[1] * right_Q[1] + right_Q[2] * right_Q[2]) / rho_r);
+		MMDF1st ml(u_l, v_l, lambda_l);
+		MMDF1st mr(u_r, v_r, lambda_r);
+		flux[0] = rho_l * ml.uplus[1] + rho_r * mr.uminus[1];
+		flux[1] = rho_l * ml.uplus[2] + rho_r * mr.uminus[2];
+		flux[2] = rho_l * ml.uplus[1] * ml.vwhole[1] + rho_r * mr.uminus[1] * mr.vwhole[1];
+		flux[3] = rho_l * 0.5 * (ml.uplus[3] + ml.uplus[1] * ml.vwhole[2] + ml.uplus[1] * ml.xi2)
+			+ rho_r * 0.5 * (mr.uminus[3] + mr.uminus[1] * mr.vwhole[2] + mr.uminus[1] * mr.xi2);
+	}
+
+	void PrintKFVSDirectMoments2D_X(const double left_Q[4], const double right_Q[4])
+	{
+		const double rho_l = left_Q[0];
+		const double rho_r = right_Q[0];
+		const double u_l = left_Q[1] / rho_l;
+		const double v_l = left_Q[2] / rho_l;
+		const double u_r = right_Q[1] / rho_r;
+		const double v_r = right_Q[2] / rho_r;
+		const double lambda_l = (K + 2.0) * 0.25 * rho_l /
+			(left_Q[3] - 0.5 * (left_Q[1] * left_Q[1] + left_Q[2] * left_Q[2]) / rho_l);
+		const double lambda_r = (K + 2.0) * 0.25 * rho_r /
+			(right_Q[3] - 0.5 * (right_Q[1] * right_Q[1] + right_Q[2] * right_Q[2]) / rho_r);
+		MMDF1st ml(u_l, v_l, lambda_l);
+		MMDF1st mr(u_r, v_r, lambda_r);
+		std::cout << std::setprecision(17)
+			<< "  lambda_l=" << lambda_l << " lambda_r=" << lambda_r
+			<< " finite_l/r=" << (std::isfinite(lambda_l) ? 1 : 0) << "/" << (std::isfinite(lambda_r) ? 1 : 0)
+			<< std::endl;
+		std::cout << "  left moments uplus0=" << ml.uplus[0] << " uplus1=" << ml.uplus[1]
+			<< " uplus2=" << ml.uplus[2] << " uplus3=" << ml.uplus[3]
+			<< " vwhole2=" << ml.vwhole[2] << " xi2=" << ml.xi2 << std::endl;
+		std::cout << "  right moments uminus0=" << mr.uminus[0] << " uminus1=" << mr.uminus[1]
+			<< " uminus2=" << mr.uminus[2] << " uminus3=" << mr.uminus[3]
+			<< " vwhole2=" << mr.vwhole[2] << " xi2=" << mr.xi2 << std::endl;
+	}
+
+	void TraceLowFaceFlux2D(
+		const char* dir,
+		const GKSSubcellBranch2D& branch,
+		int face_i,
+		int j,
+		int point_id,
+		const double left_Q[4],
+		const double right_Q[4],
+		const double flux[4])
+	{
+		const bool bad_input = StateBad2DLocal(left_Q) || StateBad2DLocal(right_Q);
+		const bool bad_flux = !FluxFinite2D(flux);
+		int target_i = -1000000;
+		int target_j = -1000000;
+		const int trace_cell = TraceCell2DLocal();
+		if (trace_cell >= 0 && branch.cells_y > 0)
+		{
+			target_i = trace_cell / branch.cells_y;
+			target_j = trace_cell % branch.cells_y;
+		}
+		const bool target_face =
+			((dir[0] == 'x' && face_i == target_i + 1 && j == target_j && point_id == 0) ||
+			 (dir[0] == 'y' && face_i == target_i + 1 && j == target_j && point_id == 0));
+		if (!TraceFaceNeighborhood2D(branch, face_i, j, dir[0] == 'x') || (!bad_input && !bad_flux && !target_face))
+		{
+			return;
+		}
+		std::cout << "JET_TRACE phase=low_flux_kfvs dir=" << dir
+			<< " face_i=" << face_i << " j=" << j << " point=" << point_id
+			<< " bad_input=" << (bad_input ? 1 : 0)
+			<< " bad_flux=" << (bad_flux ? 1 : 0) << std::endl;
+		PrintState2DLocal("  left/bottom", left_Q);
+		std::cout << std::endl;
+		PrintState2DLocal("  right/top", right_Q);
+		std::cout << std::endl;
+		PrintEnergyChain2DLocal("left/bottom energy_chain", left_Q);
+		PrintEnergyChain2DLocal("right/top energy_chain", right_Q);
+		std::cout << "  flux f0=" << flux[0] << " f1=" << flux[1]
+			<< " f2=" << flux[2] << " f3=" << flux[3] << std::endl;
+		if (dir[0] == 'x')
+		{
+			double direct_flux[4];
+			DirectKFVSFlux2D_X(left_Q, right_Q, direct_flux);
+			std::cout << "  direct_kfvs_x finite=" << (FluxFinite2D(direct_flux) ? 1 : 0)
+				<< " f0=" << direct_flux[0] << " f1=" << direct_flux[1]
+				<< " f2=" << direct_flux[2] << " f3=" << direct_flux[3] << std::endl;
+			PrintKFVSDirectMoments2D_X(left_Q, right_Q);
+		}
 	}
 
 	void FirstOrderKFVSFaceFlux2D_X(
@@ -660,7 +863,9 @@ void GKSSubcellBranchResize1D(
 	const GKSFRMesh1D& mesh)
 {
 	GKSSubcellBuildGeometry1D(branch.geom, mesh.dx);
-		branch.cell.resize(mesh.cells);
+	branch.x_left = mesh.x_left;
+	branch.dx = mesh.dx;
+	branch.cell.resize(mesh.cells);
 	branch.muscl_stats = GKSSubcellMUSCLHancockStats1D();
 }
 
@@ -749,6 +954,24 @@ void GKSSubcellComputeLowFaceFluxes1D(
 		FirstOrderKFVSFaceFlux1D(
 			branch.cell[cells - 1].low_dof[2],
 			mirrored_Q,
+			dt,
+			face_fluxes[cells].F);
+	}
+	else if (boundary == gksfr_shu_osher)
+	{
+		double boundary_Q[3];
+		ShuOsherBoundaryState1D(boundary_Q, true, branch.x_left);
+		FirstOrderKFVSFaceFlux1D(
+			boundary_Q,
+			branch.cell[0].low_dof[0],
+			dt,
+			face_fluxes[0].F);
+
+		const double x_right = branch.x_left + cells * branch.dx;
+		ShuOsherBoundaryState1D(boundary_Q, false, x_right);
+		FirstOrderKFVSFaceFlux1D(
+			branch.cell[cells - 1].low_dof[2],
+			boundary_Q,
 			dt,
 			face_fluxes[cells].F);
 	}
@@ -1017,6 +1240,15 @@ void GKSSubcellComputeLowFaceFluxes2D(
 					right_Q,
 					dt,
 					x_face_fluxes[XFaceIndex2D(branch.cells_y, face_i, j)].F[q]);
+				TraceLowFaceFlux2D(
+					"x",
+					branch,
+					face_i,
+					j,
+					q,
+					left_Q,
+					right_Q,
+					x_face_fluxes[XFaceIndex2D(branch.cells_y, face_i, j)].F[q]);
 			}
 		}
 	}
@@ -1061,6 +1293,15 @@ void GKSSubcellComputeLowFaceFluxes2D(
 					bottom_Q,
 					top_Q,
 					dt,
+					y_face_fluxes[YFaceIndex2D(branch.cells_y, i, face_j)].F[p]);
+				TraceLowFaceFlux2D(
+					"y",
+					branch,
+					i,
+					face_j,
+					p,
+					bottom_Q,
+					top_Q,
 					y_face_fluxes[YFaceIndex2D(branch.cells_y, i, face_j)].F[p]);
 			}
 		}

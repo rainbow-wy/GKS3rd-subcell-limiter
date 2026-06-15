@@ -453,8 +453,8 @@ void riemann_problem_2d()
 	runtime.start_initial = clock();
 	Block2d block;
 	block.uniform = true;
-	block.nodex = 200;
-	block.nodey = 200;
+	block.nodex = 400;
+	block.nodey = 400;
 	block.ghost = 3;
 
 

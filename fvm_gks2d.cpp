@@ -86,6 +86,38 @@ double Get_CFL(Block2d& block, Fluid2d* fluids, double tstop)
 	return dt;
 }
 
+double InternalEnergyDensity2D_ConservativePath(const double convar[4])
+{
+	return convar[3] - 0.5 * (convar[1] * convar[1] + convar[2] * convar[2]) / convar[0];
+}
+
+double Lambda2D_ConservativePath(const double convar[4])
+{
+	return (K + 2.0) * 0.25 * convar[0] / InternalEnergyDensity2D_ConservativePath(convar);
+}
+
+void KFVS1stFlux2D_ConservativeLambda(double* flux, const double* left, const double* right, double dt)
+{
+	const double density_left = left[0];
+	const double density_right = right[0];
+	const double u_left = U(density_left, left[1]);
+	const double v_left = V(density_left, left[2]);
+	const double u_right = U(density_right, right[1]);
+	const double v_right = V(density_right, right[2]);
+	const double lambda_left = Lambda2D_ConservativePath(left);
+	const double lambda_right = Lambda2D_ConservativePath(right);
+
+	MMDF1st m2(u_left, v_left, lambda_left);
+	MMDF1st m3(u_right, v_right, lambda_right);
+
+	flux[0] = density_left * dt * m2.uplus[1] + density_right * dt * m3.uminus[1];
+	flux[1] = density_left * dt * m2.uplus[2] + density_right * dt * m3.uminus[2];
+	flux[2] = density_left * dt * m2.uplus[1] * m2.vwhole[1] +
+		density_right * dt * m3.uminus[1] * m3.vwhole[1];
+	flux[3] = density_left * 0.5 * dt * (m2.uplus[3] + m2.uplus[1] * m2.vwhole[2] + m2.uplus[1] * m2.xi2) +
+		density_right * 0.5 * dt * (m3.uminus[3] + m3.uminus[1] * m3.vwhole[2] + m3.uminus[1] * m3.xi2);
+}
+
 
 
 void A_point(double* a, double* der, double* prim)
@@ -3937,6 +3969,11 @@ void GKS2D(Flux2d& flux, Recon2d& interface, double dt)
 		convar_left[i] = interface.left.convar[i];
 		convar_right[i] = interface.right.convar[i];
 	}
+	if (gks2dsolver == kfvs1st_2d)
+	{
+		KFVS1stFlux2D_ConservativeLambda(flux.f, convar_left, convar_right, dt);
+		return;
+	}
 	//cout << endl;
 	//change conservative variables to rho u lambda
 	double prim_left[4], prim_right[4], prim0[4];
@@ -4899,6 +4936,8 @@ void Recompute_KFVS_1st(Fluid2d& fluid, double* center, double* left, double* ri
 }
 void KFVS_1st(double* flux, double* left, double* right, double dt)
 {
+	KFVS1stFlux2D_ConservativeLambda(flux, left, right, dt);
+	return;
 	double density_left, density_right;
 
 	double u_left, u_right, v_left, v_right;

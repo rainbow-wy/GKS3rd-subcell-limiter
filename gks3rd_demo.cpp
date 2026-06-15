@@ -486,12 +486,12 @@ void accuracy_sinwave_2d_gks3rd()
 {
 	Ensure_GKS3rd_Result_Directory();
 	Configure_GKS3rd_2D(0.0, 0.0);
-	const double accuracy_cfl = 0.05;
+	const double accuracy_cfl = 0.5;
 	const double tstop = 2.0;
 
-	const int mesh_set = 2;
-	const int mesh_number[mesh_set] = { 10, 20 };
-	double error[mesh_set][2]{};
+	const int mesh_set = 5;
+	const int mesh_number[mesh_set] = { 10, 20, 40, 80 ,160};
+	double error[mesh_set][5]{};
 
 	for (int imesh = 0; imesh < mesh_set; ++imesh)
 	{
