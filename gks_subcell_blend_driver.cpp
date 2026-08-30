@@ -8,12 +8,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -331,6 +333,77 @@ namespace
 		}
 	}
 
+	void InitializeNearVacuumSinwave2D(GKSFRMesh2D& mesh)
+	{
+		for (int i = 0; i < mesh.cells_x; ++i)
+		{
+			for (int j = 0; j < mesh.cells_y; ++j)
+			{
+				GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, i, j)];
+				for (int p = 0; p < 3; ++p)
+				{
+					for (int q = 0; q < 3; ++q)
+					{
+						const double x = GKSFR_SolutionPointX2D(mesh, i, p);
+						const double y = GKSFR_SolutionPointY2D(mesh, j, q);
+						SetPrimitiveAtPoint2D(cell.Q[p][q], 1.0 + 0.999 * std::sin(kPi * (x + y)), 1.0, 1.0, 1.0);
+					}
+				}
+			}
+		}
+	}
+
+	double PeriodicVortexOffset(double coordinate, double center)
+	{
+		const double domain_length = 20.0;
+		double offset = coordinate - center;
+		offset -= domain_length * std::floor((offset + 0.5 * domain_length) / domain_length);
+		return offset;
+	}
+
+	void IsentropicVortexPrimitive2D(double prim[4], double x, double y, double t)
+	{
+		const double beta = 5.0;
+		const double mach_inf = 0.5;
+		const double angle = 0.25 * kPi;
+		const double u_inf = mach_inf * std::cos(angle);
+		const double v_inf = mach_inf * std::sin(angle);
+		const double dx = PeriodicVortexOffset(x, u_inf * t);
+		const double dy = PeriodicVortexOffset(y, v_inf * t);
+		const double radius_squared = dx * dx + dy * dy;
+		const double vortex_exponential = std::exp(0.5 * (1.0 - radius_squared));
+		const double density_base = 1.0
+			- beta * beta * (Gamma - 1.0) / (8.0 * Gamma * kPi * kPi)
+			* std::exp(1.0 - radius_squared);
+
+		prim[0] = std::pow(density_base, 1.0 / (Gamma - 1.0));
+		prim[1] = u_inf - beta * dy / (2.0 * kPi) * vortex_exponential;
+		prim[2] = v_inf + beta * dx / (2.0 * kPi) * vortex_exponential;
+		prim[3] = std::pow(prim[0], Gamma);
+	}
+
+	void InitializeIsentropicVortex2D(GKSFRMesh2D& mesh)
+	{
+		for (int i = 0; i < mesh.cells_x; ++i)
+		{
+			for (int j = 0; j < mesh.cells_y; ++j)
+			{
+				GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, i, j)];
+				for (int p = 0; p < 3; ++p)
+				{
+					for (int q = 0; q < 3; ++q)
+					{
+						double prim[4];
+						IsentropicVortexPrimitive2D(prim,
+							GKSFR_SolutionPointX2D(mesh, i, p),
+							GKSFR_SolutionPointY2D(mesh, j, q), 0.0);
+						Primvar_to_convar_2D(cell.Q[p][q], prim);
+					}
+				}
+			}
+		}
+	}
+
 	double GetTimeStep(const GKSFRMesh1D& mesh, double CFL, double t, double tstop)
 	{
 		double dt = mesh.dx;
@@ -350,49 +423,20 @@ namespace
 
 	double GetTimeStep2D(const GKSFRMesh2D& mesh, double CFL, double t, double tstop)
 	{
-		double dt = std::min(mesh.dx, mesh.dy);
-		const double h = dt;
+		double max_spectral_radius = 0.0;
 		for (int e = 0; e < mesh.cells_x * mesh.cells_y; ++e)
 		{
-			for (int i = 0; i < 3; ++i)
-			{
-				for (int j = 0; j < 3; ++j)
-				{
-					double prim[4];
-					double convar[4];
-					for (int m = 0; m < 4; ++m)
-					{
-						convar[m] = mesh.cell[e].Q[i][j][m];
-					}
-					Convar_to_primvar_2D(prim, convar);
-					dt = Dtx(dt, h, CFL, prim[0], prim[1], prim[2], prim[3]);
-				}
-			}
+			double cell_avg[4];
+			double prim[4];
+			GKSSubcellBigCellAverageFromPoints2D(mesh.cell[e].Q, cell_avg);
+			Convar_to_primvar_2D(prim, cell_avg);
+			const double sound_speed = Soundspeed(prim[0], prim[3]);
+			const double spectral_radius =
+				(std::fabs(prim[1]) + sound_speed) / mesh.dx
+				+ (std::fabs(prim[2]) + sound_speed) / mesh.dy;
+			max_spectral_radius = std::max(max_spectral_radius, spectral_radius);
 		}
-		if (t + dt > tstop)
-		{
-			dt = tstop - t;
-		}
-		return dt;
-	}
-
-	double GetTimeStepAstrophysicalJet2D(const GKSFRMesh2D& mesh, double CFL, double t, double tstop)
-	{
-		double dt = GetTimeStep2D(mesh, CFL, t, tstop);
-		const double subcell_weight_min = 5.0 / 18.0;
-		const double kx = 0.5;
-		const double ky = 0.5;
-		const double effective_h = std::min(kx * subcell_weight_min * mesh.dx,ky * subcell_weight_min * mesh.dy);
-		double jet_prim[4];
-		GKSFR_AstrophysicalJetPrimitive2D(jet_prim, mesh.x_left, 0.0, t);
-		const double max_jet_speed =
-			std::sqrt(jet_prim[1] * jet_prim[1] + jet_prim[2] * jet_prim[2]) +
-			Soundspeed(jet_prim[0], jet_prim[3]);
-		if (max_jet_speed > 0.0)
-		{
-			const double jet_safety_factor = 0.5;
-			dt = std::min(dt, jet_safety_factor * CFL * effective_h / max_jet_speed);
-		}
+		double dt = max_spectral_radius > 0.0 ? CFL / max_spectral_radius : tstop - t;
 		if (t + dt > tstop)
 		{
 			dt = tstop - t;
@@ -933,85 +977,6 @@ namespace
 			<< " p=" << p << std::endl;
 	}
 
-	void EnforceDoubleMachBoundaryBuffer2D(
-		const GKSFRMesh2D& mesh,
-		GKSFRBoundary2D boundary,
-		std::vector<double>& alpha)
-	{
-		if (boundary != gksfr2d_double_mach ||
-			static_cast<int>(alpha.size()) != mesh.cells_x * mesh.cells_y)
-		{
-			return;
-		}
-
-		// The moving top inflow shock is a strong boundary discontinuity.  Use a
-		// low-order buffer next to the physical boundary so the high-order FR
-		// boundary trace does not inject small spurious waves into the domain.
-		const int top_buffer = std::min(2, mesh.cells_y);
-		for (int i = 0; i < mesh.cells_x; ++i)
-		{
-			for (int jj = 0; jj < top_buffer; ++jj)
-			{
-				const int j = mesh.cells_y - 1 - jj;
-				alpha[GKSFR_CellIndex2D(mesh, i, j)] = 1.0;
-			}
-		}
-	}
-
-	void EnforceAstrophysicalJetBoundaryBuffer2D(
-		const GKSFRMesh2D& mesh,
-		GKSFRBoundary2D boundary,
-		std::vector<double>& alpha)
-	{
-		if (boundary != gksfr2d_astrophysical_jet ||
-			static_cast<int>(alpha.size()) != mesh.cells_x * mesh.cells_y)
-		{
-			return;
-		}
-
-		// The jet is injected as a very cold hypersonic inflow.  Keep a low-order
-		// inlet core and then relax the blending coefficient gradually downstream;
-		// a hard cutoff at the buffer exit tends to generate non-finite states.
-		const double jet_core_length = 0.15;
-		const double jet_relax_length = 0.35;
-		const double jet_buffer_half_width = 0.12;
-		for (int i = 0; i < mesh.cells_x; ++i)
-		{
-			const double x = GKSFR_CellCenterX2D(mesh, i);
-			const double xi = x - mesh.x_left;
-			if (xi > jet_relax_length)
-			{
-				continue;
-			}
-			double alpha_floor = 0.0;
-			if (xi <= jet_core_length)
-			{
-				alpha_floor = 1.0;
-			}
-			else if (xi <= 0.22)
-			{
-				alpha_floor = 0.75;
-			}
-			else if (xi <= 0.28)
-			{
-				alpha_floor = 0.50;
-			}
-			else
-			{
-				alpha_floor = 0.25;
-			}
-			for (int j = 0; j < mesh.cells_y; ++j)
-			{
-				const double y = GKSFR_CellCenterY2D(mesh, j);
-				if (std::fabs(y) <= jet_buffer_half_width)
-				{
-					const int e = GKSFR_CellIndex2D(mesh, i, j);
-					alpha[e] = std::max(alpha[e], alpha_floor);
-				}
-			}
-		}
-	}
-
 	void WriteCellCenterDensityTecplot(const GKSFRMesh1D& mesh, const char* path)
 	{
 		std::ofstream out(path);
@@ -1048,11 +1013,30 @@ namespace
 		}
 	}
 
-	void WriteCellCenterDensityTecplot2D(const GKSFRMesh2D& mesh, const char* path)
+	double OutputAlphaForCell2D(const GKSFRMesh2D& mesh, const std::vector<double>* alpha_cell, int i, int j)
+	{
+		if (alpha_cell == nullptr)
+		{
+			return 0.0;
+		}
+		const int e = GKSFR_CellIndex2D(mesh, i, j);
+		if (e < 0 || e >= static_cast<int>(alpha_cell->size()))
+		{
+			return 0.0;
+		}
+		return (*alpha_cell)[e];
+	}
+
+	void WriteCellCenterDensityTecplot2D(const GKSFRMesh2D& mesh, const char* path, const std::vector<double>* alpha_cell = nullptr)
 	{
 		std::ofstream out(path);
 		out << std::setprecision(16);
-		out << "variables = x,y,density,u,v,pressure\n";
+		out << "variables = x,y,density,u,v,pressure";
+		if (alpha_cell != nullptr)
+		{
+			out << ",alpha";
+		}
+		out << "\n";
 		out << "zone i = " << mesh.cells_x << ", j = " << mesh.cells_y << ", F=POINT\n";
 		for (int j = 0; j < mesh.cells_y; ++j)
 		{
@@ -1072,16 +1056,26 @@ namespace
 					<< prim[0] << " "
 					<< prim[1] << " "
 					<< prim[2] << " "
-					<< prim[3] << "\n";
+					<< prim[3];
+				if (alpha_cell != nullptr)
+				{
+					out << " " << OutputAlphaForCell2D(mesh, alpha_cell, i, j);
+				}
+				out << "\n";
 			}
 		}
 	}
 
-	void WriteFRSolutionPointDensityTecplot2D(const GKSFRMesh2D& mesh, const char* path)
+	void WriteFRSolutionPointDensityTecplot2D(const GKSFRMesh2D& mesh, const char* path, const std::vector<double>* alpha_cell = nullptr)
 	{
 		std::ofstream out(path);
 		out << std::setprecision(16);
-		out << "variables = x,y,density,u,v,pressure\n";
+		out << "variables = x,y,density,u,v,pressure";
+		if (alpha_cell != nullptr)
+		{
+			out << ",alpha";
+		}
+		out << "\n";
 		out << "zone i = " << 3 * mesh.cells_x << ", j = " << 3 * mesh.cells_y << ", F=POINT\n";
 		for (int j = 0; j < mesh.cells_y; ++j)
 		{
@@ -1104,7 +1098,12 @@ namespace
 							<< prim[0] << " "
 							<< prim[1] << " "
 							<< prim[2] << " "
-							<< prim[3] << "\n";
+							<< prim[3];
+						if (alpha_cell != nullptr)
+						{
+							out << " " << OutputAlphaForCell2D(mesh, alpha_cell, i, j);
+						}
+						out << "\n";
 					}
 				}
 			}
@@ -1188,7 +1187,7 @@ namespace
 				{
 					for (int p = 0; p < 3; ++p)
 					{
-						double prim[4] = { 0.5, 0.0, 0.0, 0.4127 };
+						double prim[4] = { 5.0, 0.0, 0.0, 0.4127 };
 						Primvar_to_convar_2D(cell.Q[p][q], prim);
 					}
 				}
@@ -1292,6 +1291,71 @@ namespace
 						const double y = GKSFR_SolutionPointY2D(mesh, ej, j);
 						const double exact = 1.0 + 0.2 * std::sin(kPi * (x + y - 2.0 * t));
 						const double diff = std::fabs(cell.Q[i][j][0] - exact);
+						e1 += diff;
+						e2 += diff * diff;
+						einf = std::max(einf, diff);
+						++count;
+					}
+				}
+			}
+		}
+		error[0] = e1 / count;
+		error[1] = std::sqrt(e2 / count);
+		error[2] = einf;
+	}
+
+	void ComputeNearVacuumSinwaveError2D(const GKSFRMesh2D& mesh, double t, double* error)
+	{
+		double e1 = 0.0;
+		double e2 = 0.0;
+		double einf = 0.0;
+		int count = 0;
+		for (int ei = 0; ei < mesh.cells_x; ++ei)
+		{
+			for (int ej = 0; ej < mesh.cells_y; ++ej)
+			{
+				const GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, ei, ej)];
+				for (int i = 0; i < 3; ++i)
+				{
+					for (int j = 0; j < 3; ++j)
+					{
+						const double x = GKSFR_SolutionPointX2D(mesh, ei, i);
+						const double y = GKSFR_SolutionPointY2D(mesh, ej, j);
+						const double exact = 1.0 + 0.999 * std::sin(kPi * (x + y - 2.0 * t));
+						const double diff = std::fabs(cell.Q[i][j][0] - exact);
+						e1 += diff;
+						e2 += diff * diff;
+						einf = std::max(einf, diff);
+						++count;
+					}
+				}
+			}
+		}
+		error[0] = e1 / count;
+		error[1] = std::sqrt(e2 / count);
+		error[2] = einf;
+	}
+
+	void ComputeIsentropicVortexDensityError2D(const GKSFRMesh2D& mesh, double t, double* error)
+	{
+		double e1 = 0.0;
+		double e2 = 0.0;
+		double einf = 0.0;
+		int count = 0;
+		for (int ei = 0; ei < mesh.cells_x; ++ei)
+		{
+			for (int ej = 0; ej < mesh.cells_y; ++ej)
+			{
+				const GKSFRCell2D& cell = mesh.cell[GKSFR_CellIndex2D(mesh, ei, ej)];
+				for (int i = 0; i < 3; ++i)
+				{
+					for (int j = 0; j < 3; ++j)
+					{
+						double exact_prim[4];
+						IsentropicVortexPrimitive2D(exact_prim,
+							GKSFR_SolutionPointX2D(mesh, ei, i),
+							GKSFR_SolutionPointY2D(mesh, ej, j), t);
+						const double diff = std::fabs(cell.Q[i][j][0] - exact_prim[0]);
 						e1 += diff;
 						e2 += diff * diff;
 						einf = std::max(einf, diff);
@@ -1412,6 +1476,82 @@ namespace
 	int YFaceIndex2DLocal(int cells_y, int cell_i, int face_j)
 	{
 		return cell_i * (cells_y + 1) + face_j;
+	}
+
+	void PrintLimitedFluxFaceCoordinates2D(const GKSFRMesh2D& mesh, const GKSFluxLimiterDiag2D& diag)
+	{
+		const double threshold = 1.0 - 1.0e-12;
+		std::cout << std::setprecision(16);
+		for (int face_i = 0; face_i <= mesh.cells_x; ++face_i)
+		{
+			const double x = mesh.x_left + face_i * mesh.dx;
+			for (int j = 0; j < mesh.cells_y; ++j)
+			{
+				const int f = XFaceIndex2DLocal(mesh.cells_y, face_i, j);
+				for (int q = 0; q < 3; ++q)
+				{
+					const int d = f * 3 + q;
+					if (d >= static_cast<int>(diag.theta_x.size()) || diag.theta_x[d] >= threshold)
+					{
+						continue;
+					}
+					const double y = GKSFR_CellCenterY2D(mesh, j) + 0.5 * mesh.dy * GKSFR_GL_Point(q);
+					std::cout << "limited x-face face_i=" << face_i
+						<< " j=" << j
+						<< " q=" << q
+						<< " x=" << x
+						<< " y=" << y
+						<< " alpha_face=" << diag.alpha_face_x[d]
+						<< " theta=" << diag.theta_x[d]
+						<< " theta_rho=" << diag.theta_rho_x[d]
+						<< " theta_p=" << diag.theta_p_x[d] << std::endl;
+				}
+			}
+		}
+		for (int i = 0; i < mesh.cells_x; ++i)
+		{
+			const double x_center = GKSFR_CellCenterX2D(mesh, i);
+			for (int face_j = 0; face_j <= mesh.cells_y; ++face_j)
+			{
+				const double y = mesh.y_bottom + face_j * mesh.dy;
+				const int f = YFaceIndex2DLocal(mesh.cells_y, i, face_j);
+				for (int p = 0; p < 3; ++p)
+				{
+					const int d = f * 3 + p;
+					if (d >= static_cast<int>(diag.theta_y.size()) || diag.theta_y[d] >= threshold)
+					{
+						continue;
+					}
+					const double x = x_center + 0.5 * mesh.dx * GKSFR_GL_Point(p);
+					std::cout << "limited y-face i=" << i
+						<< " face_j=" << face_j
+						<< " p=" << p
+						<< " x=" << x
+						<< " y=" << y
+						<< " alpha_face=" << diag.alpha_face_y[d]
+						<< " theta=" << diag.theta_y[d]
+						<< " theta_rho=" << diag.theta_rho_y[d]
+						<< " theta_p=" << diag.theta_p_y[d] << std::endl;
+				}
+			}
+		}
+	}
+
+	void PrintSmoothIndicatorStats2D(
+		const std::string& label,
+		const GKSSubcellFrameworkDiag2D& diag)
+	{
+		const GKSSmoothIndicatorFieldDiag2D& smooth = diag.smooth_indicator_diag;
+		std::cout << label
+			<< " max E1=" << smooth.max_E1
+			<< " max E2=" << smooth.max_E2
+			<< " max E=" << smooth.max_E
+			<< " max alpha raw=" << smooth.max_alpha_raw
+			<< " max alpha final=" << smooth.max_alpha_final
+			<< " indicator troubled cells=" << smooth.troubled_cells
+			<< " applied max alpha=" << diag.max_alpha
+			<< " applied troubled cells=" << diag.troubled_cells
+			<< std::endl;
 	}
 
 	void MixedFaceFluxWithoutLimiter2D(
@@ -1550,6 +1690,8 @@ namespace
 		}
 		return true;
 	}
+
+
 
 }
 
@@ -1724,7 +1866,13 @@ void GKSSubcellAdvanceOneStep2D(
 	low_order_type = config.low_mode;
 	JetTraceMeshBadStates2D("step_start_solution", mesh);
 
-	GKSSmoothIndicatorAllCells2D(mesh, config.smooth_param, diag.alpha_raw, diag.alpha_final);
+	GKSSmoothIndicatorAllCells2D(
+		mesh,
+		config.smooth_param,
+		boundary,
+		diag.alpha_raw,
+		diag.alpha_final,
+		&diag.smooth_indicator_diag);
 	if (config.blend_mode == gks_subcell2d_pure_high)
 	{
 		std::fill(diag.alpha_final.begin(), diag.alpha_final.end(), 0.0);
@@ -1733,9 +1881,7 @@ void GKSSubcellAdvanceOneStep2D(
 	{
 		std::fill(diag.alpha_final.begin(), diag.alpha_final.end(), 1.0);
 	}
-	EnforceDoubleMachBoundaryBuffer2D(mesh, boundary, diag.alpha_final);
-	EnforceAstrophysicalJetBoundaryBuffer2D(mesh, boundary, diag.alpha_final);
-	JetTraceMeshBadStates2D("after_alpha_buffer", mesh, &diag.alpha_final);
+	JetTraceMeshBadStates2D("after_alpha", mesh, &diag.alpha_final);
 
 	std::vector<GKSFRFaceFlux2D> high_x_face_fluxes;
 	std::vector<GKSFRFaceFlux2D> high_y_face_fluxes;
@@ -1848,11 +1994,6 @@ void GKSSubcellAdvanceOneStep2D(
 					{
 						mixed.cell[e].Q[i][j][m] = low_candidate.cell[e].low_dof_new[i][j][m];
 					}
-					else if (!std::isfinite(high_new.cell[e].Q[i][j][m]) &&
-						std::isfinite(low_candidate.cell[e].low_dof_new[i][j][m]))
-					{
-						mixed.cell[e].Q[i][j][m] = low_candidate.cell[e].low_dof_new[i][j][m];
-					}
 					else
 					{
 						mixed.cell[e].Q[i][j][m] =
@@ -1957,7 +2098,13 @@ void GKSSubcellAdvanceOneStep2DMasked(
 	}
 
 	low_order_type = config.low_mode;
-	GKSSmoothIndicatorAllCells2D(mesh, config.smooth_param, diag.alpha_raw, diag.alpha_final);
+	GKSSmoothIndicatorAllCells2D(
+		mesh,
+		config.smooth_param,
+		boundary,
+		diag.alpha_raw,
+		diag.alpha_final,
+		&diag.smooth_indicator_diag);
 	if (config.blend_mode == gks_subcell2d_pure_high)
 	{
 		std::fill(diag.alpha_final.begin(), diag.alpha_final.end(), 0.0);
@@ -2083,11 +2230,6 @@ void GKSSubcellAdvanceOneStep2DMasked(
 						mixed.cell[e].Q[i][j][m] = high_new.cell[e].Q[i][j][m];
 					}
 					else if (alpha >= 1.0 - 1.0e-14)
-					{
-						mixed.cell[e].Q[i][j][m] = low_candidate.cell[e].low_dof_new[i][j][m];
-					}
-					else if (!std::isfinite(high_new.cell[e].Q[i][j][m]) &&
-						std::isfinite(low_candidate.cell[e].low_dof_new[i][j][m]))
 					{
 						mixed.cell[e].Q[i][j][m] = low_candidate.cell[e].low_dof_new[i][j][m];
 					}
@@ -2271,10 +2413,11 @@ void accuracy_sinwave_2d_gks_subcell()
 		WriteCellCenterDensityTecplot2D(
 			mesh,
 			("build/result/gks_subcell_2d_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".plt").c_str());
-		std::cout << "smooth limiter stats mesh=" << mesh_number[imesh]
-			<< " max alpha=" << last_diag.max_alpha
-			<< " troubled cells=" << last_diag.troubled_cells
-			<< " flux-limited x/y=" << last_diag.flux_diag.limited_faces_x << "/" << last_diag.flux_diag.limited_faces_y
+		PrintSmoothIndicatorStats2D(
+			"smooth indicator mesh=" + std::to_string(mesh_number[imesh]),
+			last_diag);
+		std::cout << "flux-limited x/y="
+			<< last_diag.flux_diag.limited_faces_x << "/" << last_diag.flux_diag.limited_faces_y
 			<< " scaling cells=" << last_diag.scaling_diag.limited_cells << std::endl;
 	}
 
@@ -2290,6 +2433,169 @@ void accuracy_sinwave_2d_gks_subcell()
 			std::cout << " order(L1)=" << std::log(error[i - 1][0] / error[i][0]) / std::log(2.0)
 				<< " order(L2)=" << std::log(error[i - 1][1] / error[i][1]) / std::log(2.0)
 				<< " order(Linf)=" << std::log(error[i - 1][2] / error[i][2]) / std::log(2.0);
+		}
+		std::cout << std::endl;
+	}
+}
+
+void accuracy_near_vacuum_sinwave_2d_gks_subcell()
+{
+	Ensure_Result_Directory();
+	Configure_GKS_Subcell_2D(0.0, 0.0);
+	GKSSubcellFrameworkConfig2D config;
+	config.blend_mode = gks_subcell2d_hybrid;
+	config.low_mode = MUSCL_HANCOCK_2d;
+	config.use_flux_limiter = true;
+	config.use_scaling_limiter = true;
+
+	const double CFL = 0.12;
+	const double tstop = 0.05;
+	std::cout << "GKS-subcell 2D near-vacuum sinwave hybrid errors" << std::endl;
+	const int mesh_set = 4;
+	const int mesh_count = mesh_set;
+	const int mesh_number[mesh_set] = { 20, 40, 80, 160 };
+	double error[mesh_set][3]{};
+	GKSSubcellFrameworkDiag2D last_diag;
+
+	for (int imesh = 0; imesh < mesh_count; ++imesh)
+	{
+		GKSFRMesh2D mesh;
+		GKSFR_ResizeUniformMesh2D(mesh, mesh_number[imesh], mesh_number[imesh], 0.0, 2.0, 0.0, 2.0);
+		InitializeNearVacuumSinwave2D(mesh);
+		double t = 0.0;
+		int step = 0;
+
+		while (t < tstop - 1.0e-14)
+		{
+			const double dt = GetTimeStep2D(mesh, CFL, t, tstop);
+			GKSSubcellAdvanceOneStep2D(mesh, dt, gksfr2d_periodic, config, last_diag);
+			t += dt;
+			++step;
+
+			int bad_e = -1, bad_i = -1, bad_j = -1;
+			if (!CheckPhysicalState2D(mesh, bad_e, bad_i, bad_j))
+			{
+				std::cout << "GKS-subcell 2D near-vacuum sinwave failed at mesh=" << mesh_number[imesh]
+					<< " step=" << step
+					<< " cell=" << bad_e
+					<< " point=(" << bad_i << "," << bad_j << ")" << std::endl;
+				return;
+			}
+		}
+		ComputeNearVacuumSinwaveError2D(mesh, tstop, error[imesh]);
+		WriteCellCenterDensityTecplot2D(
+			mesh,
+			("build/result/gks_subcell_2d_near_vacuum_sinwave_mesh" + std::to_string(mesh_number[imesh]) + ".plt").c_str(),
+			&last_diag.alpha_final);
+		PrintSmoothIndicatorStats2D(
+			"smooth indicator mesh=" + std::to_string(mesh_number[imesh]),
+			last_diag);
+	}
+
+	std::cout << "GKS-subcell 2D near-vacuum sinwave errors" << std::endl;
+	for (int i = 0; i < mesh_count; ++i)
+	{
+		std::cout << "mesh=" << mesh_number[i]
+			<< " L1=" << error[i][0]
+			<< " L2=" << error[i][1]
+			<< " Linf=" << error[i][2];
+		if (i > 0)
+		{
+			std::cout << " order(L1)=" << std::log(error[i - 1][0] / error[i][0]) / std::log(2.0)
+				<< " order(L2)=" << std::log(error[i - 1][1] / error[i][1]) / std::log(2.0)
+				<< " order(Linf)=" << std::log(error[i - 1][2] / error[i][2]) / std::log(2.0);
+		}
+		std::cout << std::endl;
+	}
+}
+
+void isentropic_vortex_2d_gks_subcell()
+{
+	Ensure_Result_Directory();
+	Configure_GKS_Subcell_2D(0.0, 0.0);
+	GKSSubcellFrameworkConfig2D config;
+	config.blend_mode = gks_subcell2d_hybrid;
+	config.low_mode = KFVS1;
+	config.use_flux_limiter = true;
+	config.use_scaling_limiter = true;
+
+	const double CFL = GetEnvDouble("VORTEX_CFL", 0.12);
+	const double vortex_period = 20.0 * std::sqrt(2.0) / 0.5;
+	const double tstop = GetEnvDouble("VORTEX_TSTOP", vortex_period);
+	const int mesh_set = 3;
+	const int mesh_number[mesh_set] = { 80, 160, 320 };
+	double error[mesh_set][3]{};
+
+	std::cout << "GKS-subcell 2D isentropic vortex convergence test"
+		<< " (N=2, CFL=" << CFL << ", tstop=" << tstop << ")" << std::endl;
+	for (int imesh = 0; imesh < mesh_set; ++imesh)
+	{
+		const int cells = mesh_number[imesh];
+		GKSFRMesh2D mesh;
+		GKSFR_ResizeUniformMesh2D(mesh, cells, cells, -10.0, 10.0, -10.0, 10.0);
+		InitializeIsentropicVortex2D(mesh);
+		double t = 0.0;
+		int step = 0;
+		GKSSubcellFrameworkDiag2D diag;
+
+		std::cout << "running mesh=" << cells << "x" << cells << std::endl;
+		while (t < tstop - 1.0e-14)
+		{
+			const double dt = GetTimeStep2D(mesh, CFL, t, tstop);
+			std::cout << "mesh=" << cells << "x" << cells
+				<< " step=" << step
+				<< " dt=" << dt
+				<< " t=" << t << std::endl;
+			GKSSubcellAdvanceOneStep2D(mesh, dt, gksfr2d_periodic, config, diag);
+			t += dt;
+			++step;
+
+			int bad_e = -1, bad_i = -1, bad_j = -1;
+			if (!CheckPhysicalState2D(mesh, bad_e, bad_i, bad_j))
+			{
+				std::cout << "Isentropic vortex failed at mesh=" << cells
+					<< " step=" << step
+					<< " cell=" << bad_e
+					<< " point=(" << bad_i << "," << bad_j << ")" << std::endl;
+				PrintBadStateSummary2D(mesh, bad_e, bad_i, bad_j);
+				return;
+			}
+		}
+
+		ComputeIsentropicVortexDensityError2D(mesh, tstop, error[imesh]);
+		WriteCellCenterDensityTecplot2D(
+			mesh,
+			("build/result/isentropic_vortex_2d_mesh" + std::to_string(cells) + ".plt").c_str(),
+			&diag.alpha_final);
+		WriteFRSolutionPointDensityTecplot2D(
+			mesh,
+			("build/result/isentropic_vortex_2d_frpoints_mesh" + std::to_string(cells) + ".plt").c_str(),
+			&diag.alpha_final);
+		std::cout << "finished mesh=" << cells << "x" << cells
+			<< " steps=" << step
+			<< " flux-limited x/y="
+			<< diag.flux_diag.limited_faces_x << "/" << diag.flux_diag.limited_faces_y
+			<< " scaling cells=" << diag.scaling_diag.limited_cells << std::endl;
+		PrintSmoothIndicatorStats2D(
+			"smooth indicator mesh=" + std::to_string(cells),
+			diag);
+	}
+
+	std::cout << "GKS-subcell 2D isentropic vortex density errors" << std::endl;
+	for (int imesh = 0; imesh < mesh_set; ++imesh)
+	{
+		std::cout << "mesh=" << mesh_number[imesh]
+			<< " L1=" << error[imesh][0]
+			<< " L2=" << error[imesh][1]
+			<< " Linf=" << error[imesh][2];
+		if (imesh > 0)
+		{
+			std::cout << " order(L1)="
+				<< std::log(error[imesh - 1][0] / error[imesh][0]) / std::log(2.0)
+				<< " order(L2)="
+				<< std::log(error[imesh - 1][1] / error[imesh][1]) / std::log(2.0)
+				<< " order(Linf)="
+				<< std::log(error[imesh - 1][2] / error[imesh][2]) / std::log(2.0);
 		}
 		std::cout << std::endl;
 	}
@@ -2312,7 +2618,7 @@ void riemann_problem_2d_gks_subcell()
 	config.scaling_param.p_floor = 1.0e-8;
 
 	GKSFRMesh2D mesh;
-	GKSFR_ResizeUniformMesh2D(mesh, 40, 40, 0.0, 1.0, 0.0, 1.0);
+	GKSFR_ResizeUniformMesh2D(mesh, 256, 256, 0.0, 1.0, 0.0, 1.0);
 	ICfor2dRM(mesh, RiemannProblem2D_SubcellLimiterReference());
 
 	const double CFL = 0.02;
@@ -2343,15 +2649,14 @@ void riemann_problem_2d_gks_subcell()
 	std::cout << "GKS-subcell 2D Riemann limiter statistics" << std::endl;
 	std::cout << "min rho=" << diag.min_rho << std::endl;
 	std::cout << "min p=" << diag.min_p << std::endl;
-	std::cout << "max alpha=" << diag.max_alpha << std::endl;
-	std::cout << "number of troubled cells alpha > 0=" << diag.troubled_cells << std::endl;
+	PrintSmoothIndicatorStats2D("smooth indicator", diag);
 	std::cout << "number of flux-limited faces x/y="
 		<< diag.flux_diag.limited_faces_x << "/" << diag.flux_diag.limited_faces_y << std::endl;
 	std::cout << "min theta_F=" << diag.flux_diag.min_theta_x << std::endl;
 	std::cout << "min theta_G=" << diag.flux_diag.min_theta_y << std::endl;
 	std::cout << "number of scaling-limited cells=" << diag.scaling_diag.limited_cells << std::endl;
-	WriteCellCenterDensityTecplot2D(mesh, StepTaggedPath("gks_subcell_2d_riemann", step, ".plt").c_str());
-	WriteFRSolutionPointDensityTecplot2D(mesh, StepTaggedPath("gks_subcell_2d_riemann_frpoints", step, ".plt").c_str());
+	WriteCellCenterDensityTecplot2D(mesh, StepTaggedPath("gks_subcell_2d_riemann", step, ".plt").c_str(), &diag.alpha_final);
+	WriteFRSolutionPointDensityTecplot2D(mesh, StepTaggedPath("gks_subcell_2d_riemann_frpoints", step, ".plt").c_str(), &diag.alpha_final);
 }
 
 void double_mach_reflection_2d_gks_subcell()
@@ -2398,8 +2703,7 @@ void double_mach_reflection_2d_gks_subcell()
 	std::cout << "Double Mach reflection limiter statistics" << std::endl;
 	std::cout << "min rho=" << diag.min_rho << std::endl;
 	std::cout << "min p=" << diag.min_p << std::endl;
-	std::cout << "max alpha=" << diag.max_alpha << std::endl;
-	std::cout << "number of troubled cells alpha > 0=" << diag.troubled_cells << std::endl;
+	PrintSmoothIndicatorStats2D("smooth indicator", diag);
 	std::cout << "number of flux-limited faces x/y="
 		<< diag.flux_diag.limited_faces_x << "/" << diag.flux_diag.limited_faces_y << std::endl;
 	std::cout << "min theta_F=" << diag.flux_diag.min_theta_x << std::endl;
@@ -2471,8 +2775,7 @@ void detonation_shock_diffraction_2d_gks_subcell()
 	std::cout << "Detonation Shock Diffraction limiter statistics" << std::endl;
 	std::cout << "min rho=" << diag.min_rho << std::endl;
 	std::cout << "min p=" << diag.min_p << std::endl;
-	std::cout << "max alpha=" << diag.max_alpha << std::endl;
-	std::cout << "number of troubled cells alpha > 0=" << diag.troubled_cells << std::endl;
+	PrintSmoothIndicatorStats2D("smooth indicator", diag);
 	std::cout << "number of flux-limited faces x/y="
 		<< diag.flux_diag.limited_faces_x << "/" << diag.flux_diag.limited_faces_y << std::endl;
 	std::cout << "min theta_F=" << diag.flux_diag.min_theta_x << std::endl;
@@ -2497,6 +2800,8 @@ void astrophysical_jet_2d_gks_subcell()
 {
 	Ensure_Result_Directory();
 	Configure_GKS_Subcell_2D(0.1, 1.0);
+	K = 1;
+	Gamma = 5.0 / 3.0;
 	GKSSubcellFrameworkConfig2D config;
 	config.blend_mode = gks_subcell2d_hybrid;
 	config.low_mode = KFVS1;
@@ -2506,12 +2811,12 @@ void astrophysical_jet_2d_gks_subcell()
 	config.flux_param.ky = 0.5;
 
 	GKSFRMesh2D mesh;
-	const int jet_nx = GetEnvInt("JET_NX", 400);
-	const int jet_ny = GetEnvInt("JET_NY", 400);
-	GKSFR_ResizeUniformMesh2D(mesh, jet_nx, jet_ny, 0.0, 1.0, -0.5, 0.5);
+	const int jet_nx = GetEnvInt("JET_NX", 640);
+	const int jet_ny = GetEnvInt("JET_NY", 160);
+	GKSFR_ResizeUniformMesh2D(mesh, jet_nx, jet_ny, 0.0, 1.0, 0.0, 0.25);
 	InitializeAstrophysicalJet2D(mesh);
 
-	const double CFL = GetEnvDouble("JET_CFL", 0.5);
+	const double CFL = GetEnvDouble("JET_CFL", 0.1);
 	const double tstop = GetEnvDouble("JET_TSTOP", 0.001);
 	double t = 0.0;
 	int step = 0;
@@ -2542,7 +2847,7 @@ void astrophysical_jet_2d_gks_subcell()
 		{
 			break;
 		}
-		const double dt = GetTimeStepAstrophysicalJet2D(mesh, CFL, t, tstop);
+		const double dt = GetTimeStep2D(mesh, CFL, t, tstop);
 		std::cout << "step=" << step << " dt=" << dt << " t=" << t << std::endl;
 		GKSFR_SetBoundaryTime2D(t + 0.5 * dt);
 		SetJetTraceContext(step, t, dt);
@@ -2569,13 +2874,13 @@ void astrophysical_jet_2d_gks_subcell()
 	std::cout << "Astrophysical jet limiter statistics" << std::endl;
 	std::cout << "min rho=" << diag.min_rho << std::endl;
 	std::cout << "min p=" << diag.min_p << std::endl;
-	std::cout << "max alpha=" << diag.max_alpha << std::endl;
-	std::cout << "number of troubled cells alpha > 0=" << diag.troubled_cells << std::endl;
+	PrintSmoothIndicatorStats2D("smooth indicator", diag);
 	std::cout << "number of flux-limited faces x/y="
 		<< diag.flux_diag.limited_faces_x << "/" << diag.flux_diag.limited_faces_y << std::endl;
 	std::cout << "min theta_F=" << diag.flux_diag.min_theta_x << std::endl;
 	std::cout << "min theta_G=" << diag.flux_diag.min_theta_y << std::endl;
 	std::cout << "number of scaling-limited cells=" << diag.scaling_diag.limited_cells << std::endl;
-WriteCellCenterDensityTecplot2D(mesh, StepTaggedPath("astrophysical_jet_2d", step, ".plt").c_str());
-WriteFRSolutionPointDensityTecplot2D(mesh, StepTaggedPath("astrophysical_jet_2d_frpoints", step, ".plt").c_str());
+	PrintLimitedFluxFaceCoordinates2D(mesh, diag.flux_diag);
+	WriteCellCenterDensityTecplot2D(mesh, StepTaggedPath("astrophysical_jet_2d", step, ".plt").c_str(), &diag.alpha_final);
+	WriteFRSolutionPointDensityTecplot2D(mesh, StepTaggedPath("astrophysical_jet_2d_frpoints", step, ".plt").c_str(), &diag.alpha_final);
 }

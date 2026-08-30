@@ -66,6 +66,7 @@ struct GKSSubcellFrameworkDiag2D
 {
 	std::vector<double> alpha_raw;
 	std::vector<double> alpha_final;
+	GKSSmoothIndicatorFieldDiag2D smooth_indicator_diag;
 	GKSFluxLimiterDiag2D flux_diag;
 	GKSScalingLimiterDiag2D scaling_diag;
 	GKSSubcellMUSCLHancockStats2D muscl_stats;
@@ -120,6 +121,8 @@ void GKSSubcellAdvanceOneStep2DMasked(
 void accuracy_sinwave_1d_gks_subcell();
 void riemann_problem_1d_gks_subcell();
 void accuracy_sinwave_2d_gks_subcell();
+void accuracy_near_vacuum_sinwave_2d_gks_subcell();
+void isentropic_vortex_2d_gks_subcell();
 void riemann_problem_2d_gks_subcell();
 void double_mach_reflection_2d_gks_subcell();
 void detonation_shock_diffraction_2d_gks_subcell();

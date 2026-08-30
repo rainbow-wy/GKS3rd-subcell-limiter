@@ -1,5 +1,7 @@
 #include "fvm_gks2d.h"
+#include "gks_smooth_indicator.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -214,6 +216,128 @@ namespace
 			flux_vis.f[2] < 0.0 &&
 			std::fabs(flux_vis.f[0] - flux_inv.f[0]) < 1.0e-12;
 	}
+
+	double OrthonormalPhi2(double x)
+	{
+		return std::sqrt(2.5) * 0.5 * (3.0 * x * x - 1.0);
+	}
+
+	void BuildSmoothIndicatorState(int profile, double amplitude, double point_Q[3][3][4])
+	{
+		const double node[3] = {
+			-std::sqrt(3.0 / 5.0),
+			0.0,
+			std::sqrt(3.0 / 5.0)
+		};
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j)
+			{
+				double perturbation = 0.0;
+				if (profile == 1)
+				{
+					perturbation = node[i];
+				}
+				else if (profile == 2)
+				{
+					perturbation = node[j];
+				}
+				else if (profile == 3)
+				{
+					perturbation = OrthonormalPhi2(node[i]);
+				}
+				else if (profile == 4)
+				{
+					perturbation = OrthonormalPhi2(node[j]);
+				}
+				else if (profile == 5)
+				{
+					perturbation = OrthonormalPhi2(node[i]) * OrthonormalPhi2(node[j]);
+				}
+				PrimToConservative2D(point_Q[i][j], 1.0, 0.0, 0.0, 1.0 + amplitude * perturbation);
+			}
+		}
+	}
+
+	bool SmoothIndicatorTensorModalSelfTest()
+	{
+		Gamma = 1.4;
+		const double amplitude = 0.1;
+		const double tolerance = 2.0e-13;
+		double max_error = 0.0;
+		bool ok = true;
+		for (int profile = 0; profile < 6; ++profile)
+		{
+			double point_Q[3][3][4];
+			BuildSmoothIndicatorState(profile, amplitude, point_Q);
+			GKSSmoothIndicatorParam2D param;
+			GKSSmoothIndicatorCellDiag2D diag;
+			GKSSmoothIndicatorCellDiagnostics2D(point_Q, param, diag);
+
+			double expected[3][3]{};
+			expected[0][0] = 2.0;
+			if (profile == 1)
+			{
+				expected[1][0] = 2.0 * amplitude / std::sqrt(3.0);
+			}
+			else if (profile == 2)
+			{
+				expected[0][1] = 2.0 * amplitude / std::sqrt(3.0);
+			}
+			else if (profile == 3)
+			{
+				expected[2][0] = std::sqrt(2.0) * amplitude;
+			}
+			else if (profile == 4)
+			{
+				expected[0][2] = std::sqrt(2.0) * amplitude;
+			}
+			else if (profile == 5)
+			{
+				expected[2][2] = amplitude;
+			}
+
+			for (int m = 0; m < 3; ++m)
+			{
+				for (int n = 0; n < 3; ++n)
+				{
+					max_error = std::max(max_error, std::fabs(diag.qhat[m][n] - expected[m][n]));
+				}
+			}
+
+			double expected_E1 = 0.0;
+			double expected_E2 = 0.0;
+			if (profile == 1 || profile == 2)
+			{
+				expected_E1 = (amplitude * amplitude / 3.0)
+					/ (1.0 + amplitude * amplitude / 3.0);
+			}
+			else if (profile == 3 || profile == 4)
+			{
+				expected_E2 = amplitude * amplitude / (2.0 + amplitude * amplitude);
+			}
+			else if (profile == 5)
+			{
+				expected_E2 = amplitude * amplitude / (4.0 + amplitude * amplitude);
+			}
+			max_error = std::max(max_error, std::fabs(diag.E1 - expected_E1));
+			max_error = std::max(max_error, std::fabs(diag.E2 - expected_E2));
+			max_error = std::max(max_error, std::fabs(diag.E - std::max(expected_E1, expected_E2)));
+			max_error = std::max(max_error, std::fabs(diag.S2 - (diag.S1
+				+ diag.qhat[2][0] * diag.qhat[2][0]
+				+ diag.qhat[2][1] * diag.qhat[2][1]
+				+ diag.qhat[2][2] * diag.qhat[2][2]
+				+ diag.qhat[0][2] * diag.qhat[0][2]
+				+ diag.qhat[1][2] * diag.qhat[1][2])));
+			if (profile == 0)
+			{
+				ok = diag.alpha_raw == 0.0 && ok;
+			}
+		}
+		ok = max_error < tolerance && ok;
+		std::cout << "smooth_indicator_tensor_modal max_err=" << max_error << std::endl;
+		return ok;
+	}
 }
 
 int fluxtest_main()
@@ -223,6 +347,7 @@ int fluxtest_main()
 	ok = UniformFlowViscousExactTest() && ok;
 	ok = OneDimensionalReductionTest() && ok;
 	ok = ShearViscousDirectionTest() && ok;
+	ok = SmoothIndicatorTensorModalSelfTest() && ok;
 	std::cout << (ok ? "ALL_GKS3RD_2D_FLUX_TESTS_PASS" : "GKS3RD_2D_FLUX_TESTS_FAIL") << std::endl;
 	return ok ? 0 : 1;
 }

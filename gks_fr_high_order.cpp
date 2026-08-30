@@ -1352,14 +1352,14 @@ void GKSFR_DetonationShockPrimitive2D(double prim[4], double x, double y, double
 {
 	if (x <= 0.5)
 	{
-		prim[0] = 5.9970;
-		prim[1] = 98.5914;
+		prim[0] = 7.04113290690790;
+		prim[1] = 4.07794695481336;
 		prim[2] = 0.0;
-		prim[3] = 11666.5;
+		prim[3] = 30.05945;
 	}
 	else
 	{
-		prim[0] = 1.0;
+		prim[0] = 1.4;
 		prim[1] = 0.0;
 		prim[2] = 0.0;
 		prim[3] = 1.0;
@@ -1378,7 +1378,7 @@ void GKSFR_AstrophysicalJetPrimitive2D(double prim[4], double, double y, double)
 	}
 	else
 	{
-		prim[0] = 0.5;
+		prim[0] = 5.0;
 		prim[1] = 0.0;
 		prim[2] = 0.0;
 		prim[3] = 0.4127;
@@ -1449,6 +1449,16 @@ void GKSFR_BoundaryGhostState2D(
 		{
 			double prim[4];
 			GKSFR_AstrophysicalJetPrimitive2D(prim, x, y, t);
+			Primvar_to_convar_2D(ghost_Q, prim);
+			return;
+		}
+		if (side == gksfr2d_bottom_side)
+		{
+			double prim[4];
+			double inner_copy[4];
+			Copy4(inner_copy, inner_Q);
+			Convar_to_primvar_2D(prim, inner_copy);
+			prim[2] = -prim[2];
 			Primvar_to_convar_2D(ghost_Q, prim);
 			return;
 		}

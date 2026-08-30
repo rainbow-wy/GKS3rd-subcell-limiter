@@ -54,6 +54,8 @@ int main()
 	//accuracy_sinwave_2d_gksfr();//二维FR-单步3阶GKS光滑精度测试
 	//riemann_problem_2d_gks3rd();//二维FV-单步3阶GKS黎曼问题测试riemann
     //accuracy_sinwave_2d(); //二维精度测试，通过二维周期线性的正弦波传播算例，测试格式在光滑（smooth flow）无粘工况下的精度
+	//accuracy_near_vacuum_sinwave_2d_gks_subcell();
+	//isentropic_vortex_2d_gks_subcell();//二维等熵涡：N=2 三阶GKS/FR子单元格式精度测试
 	//riemann_problem_2d();  //二维黎曼问题测试，测试格式对于多维可压缩间断问题的鲁棒性和分辨率
 	//riemann_problem_2d_gks_subcell();//二维子单元限制器Riemann问题测试
 	//double_mach_reflection_2d_gks_subcell();//二维子单元限制器双马赫反射问题测试
